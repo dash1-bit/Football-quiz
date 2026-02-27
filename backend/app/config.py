@@ -14,8 +14,11 @@ load_dotenv(ROOT_DIR / ".env")
 @dataclass(frozen=True)
 class Settings:
     db_path: Path
+    snapshot_meta_path: Path
     scoring_curve: tuple[int, ...]
     cors_allow_origins: tuple[str, ...]
+    max_players: int
+    full_snapshot_max_players: int
     wikidata_endpoint: str
     wikidata_user_agent: str
 
@@ -45,20 +48,34 @@ def _parse_allow_origins(raw: str) -> tuple[str, ...]:
     return tuple(origins)
 
 
+def _resolve_path(raw: str) -> Path:
+    path = Path(raw)
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return path
+
+
 def load_settings() -> Settings:
-    db_path_raw = os.getenv("DB_PATH", "backend/data/football_quiz.db")
-    db_path = Path(db_path_raw)
-    if not db_path.is_absolute():
-        db_path = ROOT_DIR / db_path
+    db_path = _resolve_path(
+        os.getenv("DATABASE_PATH") or os.getenv("DB_PATH", "backend/data/football_quiz.sqlite"),
+    )
+    snapshot_meta_path = _resolve_path(
+        os.getenv("SNAPSHOT_META_PATH", "backend/data/snapshot_meta.json"),
+    )
 
     scoring_curve_raw = os.getenv("SCORING_CURVE", "100,85,72,60,50,40,32,24,16,10")
     scoring_curve = _parse_scoring_curve(scoring_curve_raw)
     cors_allow_origins = _parse_allow_origins(os.getenv("CORS_ALLOW_ORIGINS", "*"))
+    max_players = int(os.getenv("MAX_PLAYERS", "50000"))
+    full_snapshot_max_players = int(os.getenv("FULL_SNAPSHOT_MAX_PLAYERS", "200000"))
 
     return Settings(
         db_path=db_path,
+        snapshot_meta_path=snapshot_meta_path,
         scoring_curve=scoring_curve,
         cors_allow_origins=cors_allow_origins,
+        max_players=max_players,
+        full_snapshot_max_players=full_snapshot_max_players,
         wikidata_endpoint=os.getenv("WIKIDATA_ENDPOINT", "https://query.wikidata.org/sparql"),
         wikidata_user_agent=os.getenv(
             "WIKIDATA_USER_AGENT",

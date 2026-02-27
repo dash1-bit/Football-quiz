@@ -52,8 +52,25 @@ def on_startup() -> None:
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | int | None]:
+    snapshot_time: str | None = None
+    total_players = 0
+    playable_players = 0
+    with connect(settings.db_path) as conn:
+        init_db(conn)
+        row = conn.execute(
+            "SELECT value FROM snapshot_meta WHERE key = 'snapshot_generated_at'",
+        ).fetchone()
+        if row:
+            snapshot_time = row["value"]
+        total_players = int(conn.execute("SELECT COUNT(*) FROM players").fetchone()[0])
+        playable_players = int(conn.execute("SELECT COUNT(*) FROM playable_players").fetchone()[0])
+    return {
+        "status": "ok",
+        "snapshot_time": snapshot_time,
+        "total_players": total_players,
+        "playable_players": playable_players,
+    }
 
 
 @app.post("/api/game/create")

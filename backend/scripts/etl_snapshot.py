@@ -7,7 +7,6 @@ import random
 import re
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -229,7 +228,7 @@ def hydrate_players(
     qids: list[str],
     batch_size: int,
     replace_snapshot: bool,
-) -> None:
+) -> dict[str, Any]:
     with connect(db_path) as conn:
         init_db(conn)
         if replace_snapshot:
@@ -263,10 +262,13 @@ def hydrate_players(
             )
 
         compute_stats_cache(conn)
-        set_snapshot_meta(conn, "snapshot_generated_at", datetime.now(UTC).isoformat())
+        snapshot_time = datetime.now(UTC).isoformat()
+        set_snapshot_meta(conn, "snapshot_generated_at", snapshot_time)
         set_snapshot_meta(conn, "discovered_qids_count", str(len(qids)))
         hydrated_players = scalar(conn, "SELECT COUNT(*) FROM players")
         playable_players = scalar(conn, "SELECT COUNT(*) FROM playable_players")
+        clubs_count = scalar(conn, "SELECT COUNT(*) FROM clubs")
+        national_teams_count = scalar(conn, "SELECT COUNT(*) FROM national_teams")
         set_snapshot_meta(conn, "hydrated_players_count", str(hydrated_players))
         set_snapshot_meta(conn, "playable_players_count", str(playable_players))
         conn.commit()
@@ -274,9 +276,18 @@ def hydrate_players(
             "Phase 2 complete hydrated=%s playable=%s clubs=%s national_teams=%s",
             hydrated_players,
             playable_players,
-            scalar(conn, "SELECT COUNT(*) FROM clubs"),
-            scalar(conn, "SELECT COUNT(*) FROM national_teams"),
+            clubs_count,
+            national_teams_count,
         )
+        return {
+            "snapshot_time": snapshot_time,
+            "hydrated_players_count": hydrated_players,
+            "playable_players_count": playable_players,
+            "clubs_count": clubs_count,
+            "national_teams_count": national_teams_count,
+            "discovered_qids_count": len(qids),
+            "db_path": str(db_path),
+        }
 
 
 def parse_player_records(
@@ -605,6 +616,14 @@ def set_snapshot_meta(conn: Any, key: str, value: str) -> None:
     )
 
 
+def write_snapshot_meta_json(output_path: Path, payload: dict[str, Any]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def load_qids(path: Path) -> list[str]:
     if not path.exists():
         return []
@@ -727,9 +746,24 @@ def parse_args() -> argparse.Namespace:
         default=str(PROJECT_ROOT / "backend" / "data" / "discovered_qids.txt"),
         help="File for discovered player QIDs.",
     )
+    parser.add_argument(
+        "--snapshot-meta-path",
+        default=str(settings.snapshot_meta_path),
+        help="JSON metadata output path.",
+    )
     parser.add_argument("--page-size", type=int, default=2000, help="Phase 1 LIMIT/OFFSET page size.")
     parser.add_argument("--batch-size", type=int, default=150, help="Phase 2 batch size.")
-    parser.add_argument("--max-players", type=int, default=None, help="Optional cap for debugging.")
+    parser.add_argument(
+        "--max-players",
+        type=int,
+        default=settings.max_players,
+        help="Discovery/hydration limit.",
+    )
+    parser.add_argument(
+        "--full-snapshot",
+        action="store_true",
+        help="Use FULL_SNAPSHOT_MAX_PLAYERS limit from environment.",
+    )
     parser.add_argument(
         "--skip-discovery",
         action="store_true",
@@ -759,6 +793,13 @@ def main() -> None:
     discovery_file = Path(args.discovery_file)
     if not discovery_file.is_absolute():
         discovery_file = PROJECT_ROOT / discovery_file
+    snapshot_meta_path = Path(args.snapshot_meta_path)
+    if not snapshot_meta_path.is_absolute():
+        snapshot_meta_path = PROJECT_ROOT / snapshot_meta_path
+
+    max_players_limit = args.max_players
+    if args.full_snapshot:
+        max_players_limit = settings.full_snapshot_max_players
 
     logging.basicConfig(
         level=logging.INFO,
@@ -767,6 +808,8 @@ def main() -> None:
     logging.info("Using endpoint=%s", settings.wikidata_endpoint)
     logging.info("Using db_path=%s", db_path)
     logging.info("Using discovery_file=%s", discovery_file)
+    logging.info("Using snapshot_meta_path=%s", snapshot_meta_path)
+    logging.info("Using max_players_limit=%s", max_players_limit)
 
     client = SparqlClient(
         endpoint=settings.wikidata_endpoint,
@@ -775,15 +818,15 @@ def main() -> None:
     try:
         if args.skip_discovery:
             qids = load_qids(discovery_file)
-            if args.max_players:
-                qids = qids[: args.max_players]
+            if max_players_limit:
+                qids = qids[:max_players_limit]
             logging.info("Phase 1 skipped, loaded qids=%s from file.", len(qids))
         else:
             qids = discover_player_qids(
                 client=client,
                 output_file=discovery_file,
                 page_size=args.page_size,
-                max_players=args.max_players,
+                max_players=max_players_limit,
             )
 
         if args.skip_hydration:
@@ -793,17 +836,18 @@ def main() -> None:
         if not qids:
             raise RuntimeError("No player QIDs found. Cannot hydrate empty dataset.")
 
-        hydrate_players(
+        metadata = hydrate_players(
             client=client,
             db_path=db_path,
             qids=qids,
             batch_size=args.batch_size,
             replace_snapshot=not args.no_replace,
         )
+        write_snapshot_meta_json(snapshot_meta_path, metadata)
+        logging.info("Snapshot metadata written to %s", snapshot_meta_path)
     finally:
         client.close()
 
 
 if __name__ == "__main__":
     main()
-
