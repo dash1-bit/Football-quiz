@@ -88,10 +88,14 @@ WHERE p.position_group IS NOT NULL
 """
 
 
-def connect(db_path: Path | str) -> sqlite3.Connection:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+def connect(db_path: Path | str, read_only: bool = False) -> sqlite3.Connection:
+    path = Path(db_path).resolve()
+    if read_only:
+        db_uri = f"file:{path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -100,4 +104,3 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     conn.commit()
-

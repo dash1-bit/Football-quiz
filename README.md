@@ -69,6 +69,12 @@ Then visit `http://127.0.0.1:5173`.
 - `POST /api/game/{id}/guess`
 - `POST /api/game/{id}/next_clue`
 
+## Render Deploy
+1. In Render, create a new Web Service from this GitHub repository.
+2. Keep `render.yaml` enabled (native Python deploy, no manual commands needed).
+3. Set environment variable `WIKIDATA_USER_AGENT`.
+4. Deploy the service and copy the public backend URL (used by Cloudflare Pages config).
+
 ## Database Schema (SQLite)
 Tables:
 - `players`
@@ -166,4 +172,3 @@ pytest -q
 
 Included test:
 - `backend/tests/test_clue_engine.py` validates clue `match_count` monotonic decrease.
-

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -47,8 +49,7 @@ class NextClueRequest(BaseModel):
 
 @app.on_event("startup")
 def on_startup() -> None:
-    with connect(settings.db_path) as conn:
-        init_db(conn)
+    _ensure_schema_or_read_only()
 
 
 @app.get("/api/health")
@@ -56,15 +57,25 @@ def health() -> dict[str, str | int | None]:
     snapshot_time: str | None = None
     total_players = 0
     playable_players = 0
-    with connect(settings.db_path) as conn:
-        init_db(conn)
-        row = conn.execute(
-            "SELECT value FROM snapshot_meta WHERE key = 'snapshot_generated_at'",
-        ).fetchone()
-        if row:
-            snapshot_time = row["value"]
-        total_players = int(conn.execute("SELECT COUNT(*) FROM players").fetchone()[0])
-        playable_players = int(conn.execute("SELECT COUNT(*) FROM playable_players").fetchone()[0])
+    try:
+        with connect(settings.db_path, read_only=True) as conn:
+            row = conn.execute(
+                "SELECT value FROM snapshot_meta WHERE key = 'snapshot_generated_at'",
+            ).fetchone()
+            if row:
+                snapshot_time = row["value"]
+            total_players = int(conn.execute("SELECT COUNT(*) FROM players").fetchone()[0])
+            playable_players = int(conn.execute("SELECT COUNT(*) FROM playable_players").fetchone()[0])
+    except sqlite3.OperationalError:
+        with connect(settings.db_path) as conn:
+            init_db(conn)
+            row = conn.execute(
+                "SELECT value FROM snapshot_meta WHERE key = 'snapshot_generated_at'",
+            ).fetchone()
+            if row:
+                snapshot_time = row["value"]
+            total_players = int(conn.execute("SELECT COUNT(*) FROM players").fetchone()[0])
+            playable_players = int(conn.execute("SELECT COUNT(*) FROM playable_players").fetchone()[0])
     return {
         "status": "ok",
         "snapshot_time": snapshot_time,
@@ -125,3 +136,12 @@ def next_clue(game_id: str, payload: NextClueRequest) -> dict:
         return {"state": state}
     except GameError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+def _ensure_schema_or_read_only() -> None:
+    try:
+        with connect(settings.db_path) as conn:
+            init_db(conn)
+    except sqlite3.OperationalError:
+        with connect(settings.db_path, read_only=True) as conn:
+            conn.execute("SELECT 1").fetchone()

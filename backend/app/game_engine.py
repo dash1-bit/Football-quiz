@@ -97,8 +97,7 @@ class GameManager:
             if game.current_round and not game.current_round.is_finished:
                 raise GameError("A round is already in progress.", status_code=409)
 
-            with connect(self.db_path) as conn:
-                init_db(conn)
+            with connect(self.db_path, read_only=True) as conn:
                 target_id, target_name = self._pick_target_player(conn, game.recent_targets)
                 clue_engine = ClueEngine(conn=conn, rng=random.Random(self.rng.random()))
                 clues = clue_engine.generate_for_player(target_id, clue_count=len(self.scoring_curve))
@@ -253,8 +252,13 @@ class GameManager:
         return int(row["id"]), str(row["name"])
 
     def _ensure_db(self) -> None:
-        with connect(self.db_path) as conn:
-            init_db(conn)
+        try:
+            with connect(self.db_path) as conn:
+                init_db(conn)
+        except sqlite3.OperationalError:
+            # Read-only deployments can serve from a prebuilt snapshot.
+            with connect(self.db_path, read_only=True) as conn:
+                conn.execute("SELECT 1").fetchone()
 
     def _get_game(self, game_id: str) -> GameState:
         game = self.games.get(game_id)
@@ -350,4 +354,3 @@ def _bounded_levenshtein(a: str, b: str, max_distance: int) -> int:
             return max_distance + 1
         prev = curr
     return prev[-1]
-
