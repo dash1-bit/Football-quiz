@@ -54,4 +54,4 @@ jobs:
         if: ${{ steps.guard.outputs.deploy == 'true' }}
         uses: cloudflare/wrangler-action@v3
         with:
-          command: pages deploy frontend --project-name ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --branch main
+          command: pages deploy frontend --project-name ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --branch main --commit-dirty=true
