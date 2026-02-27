@@ -14,5 +14,4 @@ if ($LASTEXITCODE -eq 0) {
 
 git commit -m $Message
 git branch -M main
-git push
-
+git push origin main

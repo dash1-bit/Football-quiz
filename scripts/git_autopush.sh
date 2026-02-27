@@ -16,5 +16,4 @@ fi
 
 git commit -m "$MESSAGE"
 git branch -M main
-git push
-
+git push origin main
