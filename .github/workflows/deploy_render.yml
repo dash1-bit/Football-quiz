@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  trigger:
+  deploy:
     if: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger deploy hook
+      - name: Trigger Render deploy hook
         run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
 

@@ -96,7 +96,7 @@ Then visit `http://127.0.0.1:5173`.
 - Optional workflow input `release_tag` publishes those files as GitHub release assets.
 
 ## Optional Render Auto-Deploy Hook
-- Workflow: `.github/workflows/trigger-render-deploy.yml`
+- Workflow: `.github/workflows/deploy_render.yml`
 - Optional secret:
   - `RENDER_DEPLOY_HOOK_URL`
 
