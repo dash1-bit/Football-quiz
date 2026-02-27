@@ -1,0 +1,2 @@
+"""Football Quiz backend package."""
+

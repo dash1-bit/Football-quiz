@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Football Quiz Multiplayer</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Football Quiz</h1>
+      <p class="subtitle">Progressive clues. First correct guess wins the round.</p>
+
+      <section class="panel">
+        <h2>Connection</h2>
+        <label>
+          API Base URL
+          <input id="apiBase" value="http://127.0.0.1:8000" />
+        </label>
+      </section>
+
+      <section class="panel grid">
+        <div>
+          <h2>Create Game</h2>
+          <label>
+            Your Name
+            <input id="createName" placeholder="Host name" />
+          </label>
+          <button id="createBtn">Create</button>
+        </div>
+        <div>
+          <h2>Join Game</h2>
+          <label>
+            Game ID
+            <input id="joinGameId" placeholder="ABC123" />
+          </label>
+          <label>
+            Your Name
+            <input id="joinName" placeholder="Player name" />
+          </label>
+          <button id="joinBtn">Join</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Session</h2>
+        <p id="sessionInfo">Not connected.</p>
+        <div class="actions">
+          <button id="refreshBtn">Refresh State</button>
+          <button id="startBtn">Start Round</button>
+          <button id="nextClueBtn">Reveal Next Clue</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Clues</h2>
+        <ol id="clueList"></ol>
+      </section>
+
+      <section class="panel">
+        <h2>Guess</h2>
+        <label>
+          Player Name
+          <input id="guessInput" placeholder="Type your guess" />
+        </label>
+        <button id="guessBtn">Submit Guess</button>
+      </section>
+
+      <section class="panel">
+        <h2>Scoreboard</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody id="scoreboardBody"></tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Status</h2>
+        <pre id="statusBox"></pre>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
+
