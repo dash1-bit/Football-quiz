@@ -89,7 +89,7 @@ class SparqlClient:
                 backoff_seconds *= 2
                 continue
 
-            if response.status_code in (429, 503):
+            if response.status_code in (429, 502, 503, 504):
                 if attempt >= self.max_retries:
                     response.raise_for_status()
                 sleep_for = backoff_seconds + random.uniform(0, 0.3)
@@ -114,19 +114,32 @@ class SparqlClient:
         self.client.close()
 
 
-def build_discovery_query(limit: int, offset: int) -> str:
+def build_discovery_query(limit: int, offset: int, country_qid: str | None = None) -> str:
+    if country_qid:
+        country_filter = f"?club wdt:P17 wd:{country_qid} ."
+    else:
+        country_filter = """
+  ?club wdt:P17 ?clubCountry .
+  ?clubCountry wdt:P30 wd:Q46 .
+"""
     return f"""
 SELECT DISTINCT ?player WHERE {{
   ?player wdt:P31 wd:Q5 ;
           wdt:P106 wd:Q937857 ;
-          p:P54 ?clubStatement .
-  ?clubStatement ps:P54 ?club .
-  ?club wdt:P17 ?clubCountry .
-  ?clubCountry wdt:P30 wd:Q46 .
+          wdt:P54 ?club .
+  {country_filter}
 }}
-ORDER BY ?player
 LIMIT {limit}
 OFFSET {offset}
+"""
+
+
+def build_european_countries_query() -> str:
+    return """
+SELECT DISTINCT ?country WHERE {
+  ?country wdt:P30 wd:Q46 .
+}
+LIMIT 1000
 """
 
 
@@ -180,40 +193,61 @@ def discover_player_qids(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     existing = load_qids(output_file)
     known = set(existing)
-    offset = len(existing)
     new_count = 0
 
-    logging.info("Phase 1: discovery started (existing=%s, offset=%s)", len(existing), offset)
+    country_bindings = client.query(build_european_countries_query())
+    country_qids: list[str] = []
+    for binding in country_bindings:
+        country_qid = to_qid(binding_value(binding, "country"))
+        if country_qid:
+            country_qids.append(country_qid)
+    if not country_qids:
+        country_qids = [None]
+
+    logging.info(
+        "Phase 1: discovery started (existing=%s, countries=%s)",
+        len(existing),
+        len(country_qids),
+    )
     with output_file.open("a", encoding="utf-8") as handle:
-        while True:
-            query = build_discovery_query(limit=page_size, offset=offset)
-            bindings = client.query(query)
-            if not bindings:
-                break
-
-            discovered_now: list[str] = []
-            for binding in bindings:
-                qid = to_qid(binding_value(binding, "player"))
-                if not qid or qid in known:
-                    continue
-                known.add(qid)
-                discovered_now.append(qid)
-
-            for qid in discovered_now:
-                handle.write(f"{qid}\n")
-
-            new_count += len(discovered_now)
-            logging.info(
-                "Phase 1 page offset=%s rows=%s new=%s total=%s",
-                offset,
-                len(bindings),
-                len(discovered_now),
-                len(known),
-            )
-
-            offset += page_size
+        for country_qid in country_qids:
             if max_players and len(known) >= max_players:
                 break
+            offset = 0
+            while True:
+                query = build_discovery_query(
+                    limit=page_size,
+                    offset=offset,
+                    country_qid=country_qid,
+                )
+                bindings = client.query(query)
+                if not bindings:
+                    break
+
+                discovered_now: list[str] = []
+                for binding in bindings:
+                    qid = to_qid(binding_value(binding, "player"))
+                    if not qid or qid in known:
+                        continue
+                    known.add(qid)
+                    discovered_now.append(qid)
+
+                for qid in discovered_now:
+                    handle.write(f"{qid}\n")
+
+                new_count += len(discovered_now)
+                logging.info(
+                    "Phase 1 country=%s offset=%s rows=%s new=%s total=%s",
+                    country_qid or "ALL_EUROPE",
+                    offset,
+                    len(bindings),
+                    len(discovered_now),
+                    len(known),
+                )
+
+                offset += page_size
+                if max_players and len(known) >= max_players:
+                    break
 
     qids = load_qids(output_file)
     if max_players:
