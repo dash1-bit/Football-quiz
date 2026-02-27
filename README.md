@@ -75,6 +75,15 @@ Then visit `http://127.0.0.1:5173`.
 3. Set environment variable `WIKIDATA_USER_AGENT`.
 4. Deploy the service and copy the public backend URL (used by Cloudflare Pages config).
 
+## Cloudflare Pages Deploy
+1. Create a Cloudflare Pages project using this repository with `frontend` as the output directory.
+2. Add GitHub repository secrets used by `.github/workflows/deploy-frontend-cloudflare.yml`:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CLOUDFLARE_PAGES_PROJECT_NAME`
+   - `BACKEND_PUBLIC_URL`
+3. Push to `main` (or run the workflow manually) to deploy.
+
 ## Database Schema (SQLite)
 Tables:
 - `players`

@@ -1,0 +1,33 @@
+name: Deploy Frontend to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend-cloudflare.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_PAGES_PROJECT_NAME != '' && secrets.BACKEND_PUBLIC_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inject backend URL into frontend config
+        run: |
+          cat <<'EOF' > frontend/config.js
+          window.__API_BASE_URL__ = "${{ secrets.BACKEND_PUBLIC_URL }}";
+          EOF
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME }}
+          directory: frontend
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
