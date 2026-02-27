@@ -77,12 +77,14 @@ Then visit `http://127.0.0.1:5173`.
 
 ## Cloudflare Pages Deploy
 1. Create a Cloudflare Pages project using this repository with `frontend` as the output directory.
-2. Add GitHub repository secrets used by `.github/workflows/deploy-frontend-cloudflare.yml`:
+2. Add GitHub repository secrets used by `.github/workflows/deploy_pages.yml`:
    - `CLOUDFLARE_API_TOKEN`
    - `CLOUDFLARE_ACCOUNT_ID`
    - `CLOUDFLARE_PAGES_PROJECT_NAME`
    - `BACKEND_PUBLIC_URL`
 3. Push to `main` (or run the workflow manually) to deploy.
+4. Optional helper to create the project from terminal:
+   - `scripts/cf_pages_create.sh`
 
 ## Snapshot CI (Artifact + Optional Release)
 - Workflow: `.github/workflows/build-snapshot.yml`
