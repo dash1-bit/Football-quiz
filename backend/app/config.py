@@ -57,16 +57,17 @@ def _resolve_path(raw: str) -> Path:
 
 def load_settings() -> Settings:
     db_path = _resolve_path(
-        os.getenv("DATABASE_PATH") or os.getenv("DB_PATH", "backend/data/football_quiz.sqlite"),
+        os.getenv("DB_PATH") or os.getenv("DATABASE_PATH", "backend/data/football_quiz.sqlite"),
     )
+    snapshot_meta_default = db_path.with_name("snapshot_meta.json")
     snapshot_meta_path = _resolve_path(
-        os.getenv("SNAPSHOT_META_PATH", "backend/data/snapshot_meta.json"),
+        os.getenv("SNAPSHOT_META_PATH", str(snapshot_meta_default)),
     )
 
     scoring_curve_raw = os.getenv("SCORING_CURVE", "100,85,72,60,50,40,32,24,16,10")
     scoring_curve = _parse_scoring_curve(scoring_curve_raw)
     cors_allow_origins = _parse_allow_origins(os.getenv("CORS_ALLOW_ORIGINS", "*"))
-    max_players = int(os.getenv("MAX_PLAYERS", "50000"))
+    max_players = int(os.getenv("MAX_PLAYERS", "20000"))
     full_snapshot_max_players = int(os.getenv("FULL_SNAPSHOT_MAX_PLAYERS", "200000"))
 
     return Settings(

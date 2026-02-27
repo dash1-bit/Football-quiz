@@ -9,6 +9,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.10
-      - key: DATABASE_PATH
+      - key: DB_PATH
         value: backend/data/football_quiz.sqlite
-

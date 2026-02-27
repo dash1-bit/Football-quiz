@@ -1,0 +1,9 @@
+{
+  "snapshot_time": "2026-02-27T17:08:15.126121+00:00",
+  "hydrated_players_count": 20000,
+  "playable_players_count": 19034,
+  "clubs_count": 8156,
+  "national_teams_count": 162,
+  "discovered_qids_count": 20000,
+  "db_path": "C:\\Users\\danil\\Desktop\\Football Quiz\\backend\\data\\football_quiz.sqlite"
+}

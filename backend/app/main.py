@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 from fastapi import FastAPI, HTTPException
@@ -13,6 +14,7 @@ from .game_engine import GameError, GameManager
 
 settings = load_settings()
 game_manager = GameManager(db_path=settings.db_path, scoring_curve=settings.scoring_curve)
+logger = logging.getLogger("football_quiz.api")
 
 app = FastAPI(title="Football Quiz API", version="1.0.0")
 app.add_middleware(
@@ -139,6 +141,8 @@ def next_clue(game_id: str, payload: NextClueRequest) -> dict:
 
 
 def _ensure_schema_or_read_only() -> None:
+    if not settings.db_path.exists():
+        logger.warning("Database file not found at startup: %s", settings.db_path)
     try:
         with connect(settings.db_path) as conn:
             init_db(conn)

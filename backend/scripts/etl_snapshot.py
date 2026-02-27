@@ -24,6 +24,29 @@ from app.database import connect, init_db  # noqa: E402
 
 
 PLAYER_URI_PREFIX = "http://www.wikidata.org/entity/"
+DISCOVERY_COUNTRY_PRIORITY = [
+    "Q145",  # United Kingdom
+    "Q183",  # Germany
+    "Q38",   # Italy
+    "Q29",   # Spain
+    "Q142",  # France
+    "Q55",   # Netherlands
+    "Q39",   # Switzerland
+    "Q40",   # Austria
+    "Q36",   # Poland
+    "Q213",  # Czech Republic
+    "Q214",  # Slovakia
+    "Q218",  # Romania
+    "Q219",  # Bulgaria
+    "Q224",  # Croatia
+    "Q225",  # Bosnia and Herzegovina
+    "Q227",  # Azerbaijan
+    "Q228",  # Andorra
+    "Q229",  # Cyprus
+    "Q232",  # Kazakhstan
+    "Q233",  # Malta
+    "Q236",  # Montenegro
+]
 
 
 @dataclass
@@ -137,9 +160,9 @@ OFFSET {offset}
 def build_european_countries_query() -> str:
     return """
 SELECT DISTINCT ?country WHERE {
+  ?country wdt:P31/wdt:P279* wd:Q6256 .
   ?country wdt:P30 wd:Q46 .
 }
-LIMIT 1000
 """
 
 
@@ -203,6 +226,12 @@ def discover_player_qids(
             country_qids.append(country_qid)
     if not country_qids:
         country_qids = [None]
+    else:
+        country_set = set(country_qids)
+        prioritized = [qid for qid in DISCOVERY_COUNTRY_PRIORITY if qid in country_set]
+        prioritized_set = set(prioritized)
+        remaining = [qid for qid in country_qids if qid not in prioritized_set]
+        country_qids = prioritized + remaining
 
     logging.info(
         "Phase 1: discovery started (existing=%s, countries=%s)",
@@ -785,7 +814,7 @@ def parse_args() -> argparse.Namespace:
         default=str(settings.snapshot_meta_path),
         help="JSON metadata output path.",
     )
-    parser.add_argument("--page-size", type=int, default=2000, help="Phase 1 LIMIT/OFFSET page size.")
+    parser.add_argument("--page-size", type=int, default=1000, help="Phase 1 LIMIT/OFFSET page size.")
     parser.add_argument("--batch-size", type=int, default=150, help="Phase 2 batch size.")
     parser.add_argument(
         "--max-players",
