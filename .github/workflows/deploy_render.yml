@@ -7,9 +7,20 @@ on:
 
 jobs:
   deploy:
-    if: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
     runs-on: ubuntu-latest
+    env:
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
     steps:
-      - name: Trigger Render deploy hook
-        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+      - name: Check deploy hook secret
+        id: guard
+        run: |
+          if [ -n "${RENDER_DEPLOY_HOOK_URL}" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "RENDER_DEPLOY_HOOK_URL is missing."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      - name: Trigger Render deploy hook
+        if: ${{ steps.guard.outputs.deploy == 'true' }}
+        run: curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}"

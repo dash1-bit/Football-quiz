@@ -10,23 +10,41 @@ on:
 
 jobs:
   deploy-pages:
-    if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_PAGES_PROJECT_NAME != '' && secrets.BACKEND_PUBLIC_URL != '' }}
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_PAGES_PROJECT_NAME: ${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME }}
+      BACKEND_PUBLIC_URL: ${{ secrets.BACKEND_PUBLIC_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check required secrets
+        id: guard
+        run: |
+          missing=0
+          for key in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT_NAME BACKEND_PUBLIC_URL; do
+            if [ -z "${!key}" ]; then
+              echo "$key is missing."
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Inject backend URL in frontend config
+        if: ${{ steps.guard.outputs.deploy == 'true' }}
         run: |
           cat > frontend/config.js <<'EOF'
-          window.__API_BASE_URL__ = "${{ secrets.BACKEND_PUBLIC_URL }}";
+          window.__API_BASE_URL__ = "${BACKEND_PUBLIC_URL}";
           EOF
 
       - name: Deploy to Cloudflare Pages with Wrangler
+        if: ${{ steps.guard.outputs.deploy == 'true' }}
         uses: cloudflare/wrangler-action@v3
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         with:
-          command: pages deploy frontend --project-name ${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME }} --branch main
-
+          command: pages deploy frontend --project-name ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --branch main
