@@ -9,6 +9,14 @@ const sessionInfo = document.getElementById("sessionInfo");
 const clueList = document.getElementById("clueList");
 const scoreboardBody = document.getElementById("scoreboardBody");
 
+function resolveDefaultApiBase() {
+  const value = window.__API_BASE_URL__;
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  return "http://localhost:8000";
+}
+
 function apiBase() {
   return document.getElementById("apiBase").value.trim().replace(/\/+$/, "");
 }
@@ -194,5 +202,5 @@ function startPolling() {
 
 attachHandlers();
 startPolling();
+document.getElementById("apiBase").value = resolveDefaultApiBase();
 setStatus("Ready. Set API URL, then create or join a game.");
-

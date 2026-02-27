@@ -15,7 +15,7 @@ game_manager = GameManager(db_path=settings.db_path, scoring_curve=settings.scor
 app = FastAPI(title="Football Quiz API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(settings.cors_allow_origins),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,4 +108,3 @@ def next_clue(game_id: str, payload: NextClueRequest) -> dict:
         return {"state": state}
     except GameError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-

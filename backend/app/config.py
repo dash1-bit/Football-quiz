@@ -15,6 +15,7 @@ load_dotenv(ROOT_DIR / ".env")
 class Settings:
     db_path: Path
     scoring_curve: tuple[int, ...]
+    cors_allow_origins: tuple[str, ...]
     wikidata_endpoint: str
     wikidata_user_agent: str
 
@@ -37,6 +38,13 @@ def _parse_scoring_curve(raw: str) -> tuple[int, ...]:
     return tuple(values)
 
 
+def _parse_allow_origins(raw: str) -> tuple[str, ...]:
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    if not origins:
+        return ("*",)
+    return tuple(origins)
+
+
 def load_settings() -> Settings:
     db_path_raw = os.getenv("DB_PATH", "backend/data/football_quiz.db")
     db_path = Path(db_path_raw)
@@ -45,14 +53,15 @@ def load_settings() -> Settings:
 
     scoring_curve_raw = os.getenv("SCORING_CURVE", "100,85,72,60,50,40,32,24,16,10")
     scoring_curve = _parse_scoring_curve(scoring_curve_raw)
+    cors_allow_origins = _parse_allow_origins(os.getenv("CORS_ALLOW_ORIGINS", "*"))
 
     return Settings(
         db_path=db_path,
         scoring_curve=scoring_curve,
+        cors_allow_origins=cors_allow_origins,
         wikidata_endpoint=os.getenv("WIKIDATA_ENDPOINT", "https://query.wikidata.org/sparql"),
         wikidata_user_agent=os.getenv(
             "WIKIDATA_USER_AGENT",
             "FootballQuizETL/1.0 (https://example.com/contact)",
         ),
     )
-
