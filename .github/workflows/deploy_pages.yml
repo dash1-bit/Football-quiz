@@ -52,6 +52,18 @@ jobs:
 
       - name: Deploy to Cloudflare Pages with Wrangler
         if: ${{ steps.guard.outputs.deploy == 'true' }}
+        id: wrangler_deploy
+        continue-on-error: true
         uses: cloudflare/wrangler-action@v3
         with:
           command: pages deploy frontend --project-name ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --branch main --commit-dirty=true
+
+      - name: Fallback deploy with Pages Action
+        if: ${{ steps.guard.outputs.deploy == 'true' && steps.wrangler_deploy.outcome == 'failure' }}
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }}
+          directory: frontend
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
