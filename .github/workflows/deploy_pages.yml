@@ -43,6 +43,13 @@ jobs:
           window.__API_BASE_URL__ = "${BACKEND_PUBLIC_URL}";
           EOF
 
+      - name: Ensure Cloudflare Pages project exists
+        if: ${{ steps.guard.outputs.deploy == 'true' }}
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          command: pages project create ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --production-branch main
+
       - name: Deploy to Cloudflare Pages with Wrangler
         if: ${{ steps.guard.outputs.deploy == 'true' }}
         uses: cloudflare/wrangler-action@v3
