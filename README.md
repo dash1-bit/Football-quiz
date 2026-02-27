@@ -84,6 +84,20 @@ Then visit `http://127.0.0.1:5173`.
    - `BACKEND_PUBLIC_URL`
 3. Push to `main` (or run the workflow manually) to deploy.
 
+## Snapshot CI (Artifact + Optional Release)
+- Workflow: `.github/workflows/build-snapshot.yml`
+- Produces artifact: `football-quiz-snapshot` containing:
+  - `backend/data/football_quiz.sqlite`
+  - `backend/data/snapshot_meta.json`
+- Optional secret:
+  - `WIKIDATA_USER_AGENT`
+- Optional workflow input `release_tag` publishes those files as GitHub release assets.
+
+## Optional Render Auto-Deploy Hook
+- Workflow: `.github/workflows/trigger-render-deploy.yml`
+- Optional secret:
+  - `RENDER_DEPLOY_HOOK_URL`
+
 ## Database Schema (SQLite)
 Tables:
 - `players`

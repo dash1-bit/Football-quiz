@@ -1,0 +1,66 @@
+name: Build Snapshot Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_snapshot:
+        description: "Use FULL_SNAPSHOT_MAX_PLAYERS"
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: "Optional release tag (example: snapshot-2026-02-27)"
+        required: false
+        type: string
+  schedule:
+    - cron: "0 4 * * 1"
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build snapshot
+        shell: bash
+        env:
+          MAX_PLAYERS: 50000
+          FULL_SNAPSHOT_MAX_PLAYERS: 200000
+          WIKIDATA_USER_AGENT: ${{ secrets.WIKIDATA_USER_AGENT }}
+        run: |
+          if [ -z "${WIKIDATA_USER_AGENT}" ]; then
+            export WIKIDATA_USER_AGENT="FootballQuizSnapshotBot/1.0 (https://github.com/${{ github.repository }})"
+          fi
+          if [ "${{ github.event.inputs.full_snapshot || 'false' }}" = "true" ]; then
+            python backend/scripts/etl_snapshot.py --full-snapshot
+          else
+            python backend/scripts/etl_snapshot.py --max-players "${MAX_PLAYERS}"
+          fi
+
+      - name: Upload snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: football-quiz-snapshot
+          path: |
+            backend/data/football_quiz.sqlite
+            backend/data/snapshot_meta.json
+          if-no-files-found: error
+
+      - name: Publish release asset
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          files: |
+            backend/data/football_quiz.sqlite
+            backend/data/snapshot_meta.json
+
