@@ -14,7 +14,7 @@ function resolveDefaultApiBase() {
   if (typeof value === "string" && value.trim()) {
     return value.trim();
   }
-  return "http://localhost:8000";
+  return "https://football-quiz-t7m8.onrender.com";
 }
 
 function apiBase() {
