@@ -12,3 +12,9 @@ backend/data/snapshot_meta.json
 !backend/data/snapshot_meta.json
 
 .env
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
