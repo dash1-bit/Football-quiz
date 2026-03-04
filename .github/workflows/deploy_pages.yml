@@ -11,59 +11,34 @@ on:
 jobs:
   deploy-pages:
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_PAGES_PROJECT_NAME: ${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME }}
-      BACKEND_PUBLIC_URL: ${{ secrets.BACKEND_PUBLIC_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Check required secrets
-        id: guard
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          missing=0
-          for key in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT_NAME BACKEND_PUBLIC_URL; do
+          for key in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
             if [ -z "${!key}" ]; then
               echo "$key is missing."
-              missing=1
+              exit 1
             fi
           done
-          if [ "$missing" -eq 0 ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Inject backend URL in frontend config
-        if: ${{ steps.guard.outputs.deploy == 'true' }}
         run: |
           cat > frontend/config.js <<'EOF'
-          window.__API_BASE_URL__ = "${BACKEND_PUBLIC_URL}";
+          window.__API_BASE_URL__ = "https://football-quiz-t7m8.onrender.com";
           EOF
 
-      - name: Ensure Cloudflare Pages project exists
-        if: ${{ steps.guard.outputs.deploy == 'true' }}
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          command: pages project create ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --production-branch main
-
-      - name: Deploy to Cloudflare Pages with Wrangler
-        if: ${{ steps.guard.outputs.deploy == 'true' }}
-        id: wrangler_deploy
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          command: pages deploy frontend --project-name ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }} --branch main --commit-dirty=true
-
-      - name: Fallback deploy with Pages Action
-        if: ${{ steps.guard.outputs.deploy == 'true' && steps.wrangler_deploy.outcome == 'failure' }}
+      - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
         with:
-          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: ${{ env.CLOUDFLARE_PAGES_PROJECT_NAME }}
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: football-quiz
           directory: frontend
+          wranglerVersion: "3"
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
