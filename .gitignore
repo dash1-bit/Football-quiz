@@ -12,3 +12,6 @@ backend/data/snapshot_meta.json
 !backend/data/snapshot_meta.json
 
 .env
+
+node_modules/
+e2e/node_modules/
