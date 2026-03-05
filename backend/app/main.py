@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,7 @@ settings = load_settings()
 game_manager = GameManager(db_path=settings.db_path, scoring_curve=settings.scoring_curve)
 logger = logging.getLogger("football_quiz.api")
 
-app = FastAPI(title="Football Quiz API", version="1.0.0")
+app = FastAPI(title="Football Quiz API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_allow_origins),
@@ -26,27 +26,50 @@ app.add_middleware(
 )
 
 
-class CreateGameRequest(BaseModel):
+class LobbyCreateRequest(BaseModel):
+    host_name: str = Field(min_length=1, max_length=50)
+    difficulty: str = Field(min_length=1, max_length=20)
+
+
+class LobbyJoinRequest(BaseModel):
+    lobby_id: str = Field(min_length=1, max_length=12)
     player_name: str = Field(min_length=1, max_length=50)
 
 
-class JoinGameRequest(BaseModel):
+class LobbyStartRequest(BaseModel):
+    host_token: str = Field(min_length=1, max_length=64)
+
+
+class SubmitGuessRequest(BaseModel):
+    player_token: str = Field(min_length=1, max_length=64)
+    guess_text: str = Field(min_length=1, max_length=120)
+
+
+class AdvanceRequest(BaseModel):
+    host_token: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class LegacyCreateGameRequest(BaseModel):
+    player_name: str = Field(min_length=1, max_length=50)
+
+
+class LegacyJoinGameRequest(BaseModel):
     game_id: str = Field(min_length=1, max_length=12)
     player_name: str = Field(min_length=1, max_length=50)
 
 
-class StartGameRequest(BaseModel):
+class LegacyStartGameRequest(BaseModel):
     game_id: str = Field(min_length=1, max_length=12)
-    player_id: str = Field(min_length=1, max_length=32)
+    player_id: str = Field(min_length=1, max_length=64)
 
 
-class GuessRequest(BaseModel):
-    player_id: str = Field(min_length=1, max_length=32)
+class LegacyGuessRequest(BaseModel):
+    player_id: str = Field(min_length=1, max_length=64)
     guess: str = Field(min_length=1, max_length=120)
 
 
-class NextClueRequest(BaseModel):
-    player_id: str = Field(min_length=1, max_length=32)
+class LegacyNextClueRequest(BaseModel):
+    player_id: str = Field(min_length=1, max_length=64)
 
 
 @app.on_event("startup")
@@ -86,8 +109,82 @@ def health() -> dict[str, str | int | None]:
     }
 
 
+@app.post("/api/lobby/create")
+def create_lobby(payload: LobbyCreateRequest, request: Request) -> dict:
+    try:
+        result = game_manager.create_lobby(payload.host_name, payload.difficulty)
+        share_url = str(request.base_url).rstrip("/") + result["share_url"]
+        result["share_url"] = share_url
+        return result
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/lobby/join")
+def join_lobby(payload: LobbyJoinRequest) -> dict:
+    try:
+        return game_manager.join_lobby(payload.lobby_id.upper(), payload.player_name)
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/api/lobby/{lobby_id}/state")
+def lobby_state(lobby_id: str, token: str | None = Query(default=None, max_length=64)) -> dict:
+    try:
+        return game_manager.get_lobby_state(lobby_id.upper(), token=token)
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/lobby/{lobby_id}/start")
+def start_lobby_game(lobby_id: str, payload: LobbyStartRequest) -> dict:
+    try:
+        state = game_manager.start_game(lobby_id.upper(), payload.host_token)
+        return {"state": state}
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/api/game/{lobby_id}/state")
+def game_state(lobby_id: str, token: str | None = Query(default=None, max_length=64)) -> dict:
+    try:
+        return game_manager.get_game_state(lobby_id.upper(), token=token)
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/game/{lobby_id}/submit_guess")
+def submit_guess(lobby_id: str, payload: SubmitGuessRequest) -> dict:
+    try:
+        return game_manager.submit_guess(lobby_id.upper(), payload.player_token, payload.guess_text)
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/game/{lobby_id}/advance_if_needed")
+def advance_if_needed(lobby_id: str, payload: AdvanceRequest) -> dict:
+    try:
+        state = game_manager.advance_if_needed(lobby_id.upper(), host_token=payload.host_token)
+        return {"state": state}
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.get("/api/autocomplete")
+def autocomplete(
+    q: str = Query(min_length=1, max_length=120),
+    lobby_id: str = Query(min_length=1, max_length=12),
+    limit: int = Query(default=10, ge=1, le=10),
+) -> dict:
+    try:
+        suggestions = game_manager.autocomplete(lobby_id=lobby_id.upper(), query=q, limit=limit)
+        return {"suggestions": suggestions}
+    except GameError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
 @app.post("/api/game/create")
-def create_game(payload: CreateGameRequest) -> dict:
+def legacy_create_game(payload: LegacyCreateGameRequest) -> dict:
     try:
         return game_manager.create_game(payload.player_name)
     except GameError as exc:
@@ -95,7 +192,7 @@ def create_game(payload: CreateGameRequest) -> dict:
 
 
 @app.post("/api/game/join")
-def join_game(payload: JoinGameRequest) -> dict:
+def legacy_join_game(payload: LegacyJoinGameRequest) -> dict:
     try:
         return game_manager.join_game(payload.game_id.upper(), payload.player_name)
     except GameError as exc:
@@ -103,7 +200,7 @@ def join_game(payload: JoinGameRequest) -> dict:
 
 
 @app.post("/api/game/start")
-def start_game(payload: StartGameRequest) -> dict:
+def legacy_start_game(payload: LegacyStartGameRequest) -> dict:
     try:
         state = game_manager.start_round(payload.game_id.upper(), payload.player_id)
         return {"state": state}
@@ -111,28 +208,16 @@ def start_game(payload: StartGameRequest) -> dict:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
-@app.get("/api/game/{game_id}/state")
-def game_state(game_id: str) -> dict:
-    try:
-        return game_manager.get_state(game_id.upper())
-    except GameError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
 @app.post("/api/game/{game_id}/guess")
-def submit_guess(game_id: str, payload: GuessRequest) -> dict:
+def legacy_guess(game_id: str, payload: LegacyGuessRequest) -> dict:
     try:
-        return game_manager.submit_guess(
-            game_id.upper(),
-            payload.player_id,
-            payload.guess,
-        )
+        return game_manager.submit_guess(game_id.upper(), payload.player_id, payload.guess)
     except GameError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @app.post("/api/game/{game_id}/next_clue")
-def next_clue(game_id: str, payload: NextClueRequest) -> dict:
+def legacy_next_clue(game_id: str, payload: LegacyNextClueRequest) -> dict:
     try:
         state = game_manager.next_clue(game_id.upper(), payload.player_id)
         return {"state": state}

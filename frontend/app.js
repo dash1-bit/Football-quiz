@@ -1,13 +1,54 @@
-const appState = {
-  gameId: null,
-  playerId: null,
-  pollHandle: null,
+const screens = {
+  menu: document.getElementById("screenMenu"),
+  setup: document.getElementById("screenSetup"),
+  lobby: document.getElementById("screenLobby"),
+  game: document.getElementById("screenGame"),
+  end: document.getElementById("screenEnd"),
 };
 
-const statusBox = document.getElementById("statusBox");
-const sessionInfo = document.getElementById("sessionInfo");
-const clueList = document.getElementById("clueList");
-const scoreboardBody = document.getElementById("scoreboardBody");
+const dom = {
+  playBtn: document.getElementById("playBtn"),
+  backToMenuBtn: document.getElementById("backToMenuBtn"),
+  lobbyBackBtn: document.getElementById("lobbyBackBtn"),
+  endBackToMenuBtn: document.getElementById("endBackToMenuBtn"),
+  apiBase: document.getElementById("apiBase"),
+  createHostName: document.getElementById("createHostName"),
+  difficultySelect: document.getElementById("difficultySelect"),
+  createLobbyBtn: document.getElementById("createLobbyBtn"),
+  joinLobbyCode: document.getElementById("joinLobbyCode"),
+  joinPlayerName: document.getElementById("joinPlayerName"),
+  joinLobbyBtn: document.getElementById("joinLobbyBtn"),
+  lobbyCodeText: document.getElementById("lobbyCodeText"),
+  shareLinkBtn: document.getElementById("shareLinkBtn"),
+  playerCountText: document.getElementById("playerCountText"),
+  lobbyPlayersList: document.getElementById("lobbyPlayersList"),
+  startGameBtn: document.getElementById("startGameBtn"),
+  clueIndexText: document.getElementById("clueIndexText"),
+  timerText: document.getElementById("timerText"),
+  clueText: document.getElementById("clueText"),
+  guessInput: document.getElementById("guessInput"),
+  guessBtn: document.getElementById("guessBtn"),
+  guessStatusText: document.getElementById("guessStatusText"),
+  autocompleteList: document.getElementById("autocompleteList"),
+  scoreboardList: document.getElementById("scoreboardList"),
+  answerText: document.getElementById("answerText"),
+  finalScoreList: document.getElementById("finalScoreList"),
+  playAgainBtn: document.getElementById("playAgainBtn"),
+  globalMessage: document.getElementById("globalMessage"),
+};
+
+const state = {
+  lobbyId: null,
+  token: null,
+  isHost: false,
+  started: false,
+  gameOver: false,
+  clueIndex: 0,
+  pollHandle: null,
+  autocompleteHandle: null,
+  latestLobby: null,
+  latestGame: null,
+};
 
 function resolveDefaultApiBase() {
   const value = window.__API_BASE_URL__;
@@ -18,15 +59,22 @@ function resolveDefaultApiBase() {
 }
 
 function apiBase() {
-  return document.getElementById("apiBase").value.trim().replace(/\/+$/, "");
+  return dom.apiBase.value.trim().replace(/\/+$/, "");
 }
 
-function setStatus(message, payload = null) {
-  const lines = [message];
-  if (payload) {
-    lines.push(JSON.stringify(payload, null, 2));
-  }
-  statusBox.textContent = lines.join("\n\n");
+function setMessage(message = "", isError = true) {
+  dom.globalMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
+  dom.globalMessage.textContent = message;
+}
+
+function showScreen(name) {
+  Object.entries(screens).forEach(([key, element]) => {
+    element.classList.toggle("active", key === name);
+  });
+}
+
+function buildShareUrl(lobbyId) {
+  return `${window.location.origin}/?lobby=${encodeURIComponent(lobbyId)}`;
 }
 
 async function apiRequest(path, method = "GET", body = null) {
@@ -53,154 +101,389 @@ async function apiRequest(path, method = "GET", body = null) {
   return payload;
 }
 
-function renderGameState(game) {
-  sessionInfo.textContent = appState.gameId
-    ? `Game ${appState.gameId} | You ${appState.playerId}`
-    : "Not connected.";
+function renderPlayerList(listElement, rows) {
+  listElement.innerHTML = "";
+  for (const row of rows) {
+    const li = document.createElement("li");
+    const left = document.createElement("span");
+    const right = document.createElement("span");
+    left.textContent = row.name;
+    right.textContent = row.rightText || "";
+    li.append(left, right);
+    listElement.appendChild(li);
+  }
+}
 
-  clueList.innerHTML = "";
-  const round = game.round;
-  if (round && Array.isArray(round.revealed_clues)) {
-    for (const clue of round.revealed_clues) {
-      const li = document.createElement("li");
-      li.textContent = clue.text;
-      clueList.appendChild(li);
-    }
+function renderLobby(lobby) {
+  state.latestLobby = lobby;
+  state.started = Boolean(lobby.started);
+  dom.lobbyCodeText.textContent = lobby.lobby_id;
+  dom.playerCountText.textContent = `${lobby.player_count}/${lobby.max_players} players`;
+  renderPlayerList(
+    dom.lobbyPlayersList,
+    (lobby.players || []).map((player) => ({ name: player.name, rightText: "" })),
+  );
+  const canStart = Boolean(lobby.can_start);
+  dom.startGameBtn.disabled = !canStart;
+  state.isHost = Boolean(lobby.is_host);
+}
+
+function renderGame(game) {
+  state.latestGame = game;
+  state.started = Boolean(game.started);
+  state.gameOver = Boolean(game.game_over);
+
+  if (state.gameOver) {
+    renderEnd(game);
+    return;
   }
 
-  scoreboardBody.innerHTML = "";
-  if (Array.isArray(game.scoreboard)) {
-    for (const row of game.scoreboard) {
-      const tr = document.createElement("tr");
-      const tdName = document.createElement("td");
-      const tdScore = document.createElement("td");
-      tdName.textContent = row.name;
-      tdScore.textContent = String(row.score);
-      tr.append(tdName, tdScore);
-      scoreboardBody.appendChild(tr);
-    }
-  }
+  showScreen("game");
+  dom.clueIndexText.textContent = String(game.clue_index || 1);
+  dom.timerText.textContent = `${game.round_seconds_left || 0}s`;
+  dom.clueText.textContent = game.current_clue_text || "Waiting for clue...";
 
-  const summary = {
-    game_status: game.status,
-    round_status: round ? round.status : null,
-    revealed: round ? `${round.revealed_count}/${round.total_clues}` : null,
-    winner: round ? round.winner_name : null,
-    answer: round ? round.answer : null,
-  };
-  setStatus("State updated.", summary);
+  const scoreboardRows = (game.scoreboard || []).map((row) => ({
+    name: row.name,
+    rightText: `${row.score} pts${row.has_solved ? " • solved" : ""}`,
+  }));
+  renderPlayerList(dom.scoreboardList, scoreboardRows);
+
+  const clueChanged = state.clueIndex !== game.clue_index;
+  const canGuess = Boolean(game.can_guess);
+  dom.guessInput.disabled = !canGuess;
+  dom.guessBtn.disabled = !canGuess;
+
+  if (clueChanged && canGuess) {
+    dom.guessInput.value = "";
+    hideAutocomplete();
+  }
+  state.clueIndex = game.clue_index;
+
+  if (game.you_has_solved) {
+    dom.guessStatusText.textContent = "Correct! You're locked for the rest of this game.";
+  } else if (game.you_has_submitted_this_round) {
+    dom.guessStatusText.textContent = "Waiting for others...";
+  } else if (canGuess) {
+    dom.guessStatusText.textContent = "Type a player name and submit.";
+  } else {
+    dom.guessStatusText.textContent = "";
+  }
+}
+
+function renderEnd(game) {
+  showScreen("end");
+  dom.answerText.textContent = game.answer_name || "Unknown";
+  const rows = (game.scoreboard || []).map((row) => ({
+    name: row.name,
+    rightText: `${row.score} pts`,
+  }));
+  renderPlayerList(dom.finalScoreList, rows);
+
+  dom.playAgainBtn.disabled = !state.isHost;
+  if (!state.isHost) {
+    setMessage("Waiting for host to start another game.", false);
+  } else {
+    setMessage("");
+  }
 }
 
 async function refreshState() {
-  if (!appState.gameId) {
+  if (!state.lobbyId) {
     return;
   }
-  const game = await apiRequest(`/api/game/${appState.gameId}/state`);
-  renderGameState(game);
-}
 
-async function createGame() {
-  const playerName = document.getElementById("createName").value.trim();
-  if (!playerName) {
-    setStatus("Enter your name first.");
+  if (!state.started) {
+    const lobby = await apiRequest(
+      `/api/lobby/${encodeURIComponent(state.lobbyId)}/state?token=${encodeURIComponent(state.token || "")}`,
+    );
+    renderLobby(lobby);
+    if (lobby.started) {
+      state.started = true;
+      const game = await apiRequest(
+        `/api/game/${encodeURIComponent(state.lobbyId)}/state?token=${encodeURIComponent(state.token || "")}`,
+      );
+      renderGame(game);
+    } else {
+      showScreen("lobby");
+    }
     return;
   }
-  const payload = await apiRequest("/api/game/create", "POST", { player_name: playerName });
-  appState.gameId = payload.game_id;
-  appState.playerId = payload.player_id;
-  document.getElementById("joinGameId").value = payload.game_id;
-  renderGameState(payload.state);
-}
 
-async function joinGame() {
-  const gameId = document.getElementById("joinGameId").value.trim().toUpperCase();
-  const playerName = document.getElementById("joinName").value.trim();
-  if (!gameId || !playerName) {
-    setStatus("Provide game ID and name.");
-    return;
-  }
-  const payload = await apiRequest("/api/game/join", "POST", {
-    game_id: gameId,
-    player_name: playerName,
-  });
-  appState.gameId = payload.game_id;
-  appState.playerId = payload.player_id;
-  renderGameState(payload.state);
-}
-
-async function startRound() {
-  if (!appState.gameId || !appState.playerId) {
-    setStatus("Create or join a game first.");
-    return;
-  }
-  const payload = await apiRequest("/api/game/start", "POST", {
-    game_id: appState.gameId,
-    player_id: appState.playerId,
-  });
-  renderGameState(payload.state);
-}
-
-async function revealNextClue() {
-  if (!appState.gameId || !appState.playerId) {
-    setStatus("Create or join a game first.");
-    return;
-  }
-  const payload = await apiRequest(`/api/game/${appState.gameId}/next_clue`, "POST", {
-    player_id: appState.playerId,
-  });
-  renderGameState(payload.state);
-}
-
-async function submitGuess() {
-  if (!appState.gameId || !appState.playerId) {
-    setStatus("Create or join a game first.");
-    return;
-  }
-  const guess = document.getElementById("guessInput").value.trim();
-  if (!guess) {
-    setStatus("Enter a guess first.");
-    return;
-  }
-  const payload = await apiRequest(`/api/game/${appState.gameId}/guess`, "POST", {
-    player_id: appState.playerId,
-    guess,
-  });
-  document.getElementById("guessInput").value = "";
-  renderGameState(payload.state);
-  if (payload.correct) {
-    setStatus(`Correct guess! +${payload.points_awarded} points`, payload.state.round);
-  } else {
-    setStatus("Incorrect guess. Keep trying.");
-  }
-}
-
-function attachHandlers() {
-  document.getElementById("createBtn").addEventListener("click", () => runAction(createGame));
-  document.getElementById("joinBtn").addEventListener("click", () => runAction(joinGame));
-  document.getElementById("startBtn").addEventListener("click", () => runAction(startRound));
-  document.getElementById("nextClueBtn").addEventListener("click", () => runAction(revealNextClue));
-  document.getElementById("guessBtn").addEventListener("click", () => runAction(submitGuess));
-  document.getElementById("refreshBtn").addEventListener("click", () => runAction(refreshState));
-}
-
-async function runAction(fn) {
-  try {
-    await fn();
-  } catch (error) {
-    setStatus(`Error: ${error.message}`);
-  }
+  const game = await apiRequest(
+    `/api/game/${encodeURIComponent(state.lobbyId)}/state?token=${encodeURIComponent(state.token || "")}`,
+  );
+  renderGame(game);
 }
 
 function startPolling() {
-  if (appState.pollHandle) {
-    clearInterval(appState.pollHandle);
-  }
-  appState.pollHandle = setInterval(() => {
+  stopPolling();
+  state.pollHandle = setInterval(() => {
     runAction(refreshState);
-  }, 3000);
+  }, 1000);
 }
 
-attachHandlers();
-startPolling();
-document.getElementById("apiBase").value = resolveDefaultApiBase();
-setStatus("Ready. Set API URL, then create or join a game.");
+function stopPolling() {
+  if (state.pollHandle) {
+    clearInterval(state.pollHandle);
+    state.pollHandle = null;
+  }
+}
+
+function hideAutocomplete() {
+  dom.autocompleteList.innerHTML = "";
+  dom.autocompleteList.classList.remove("visible");
+}
+
+function renderAutocomplete(items) {
+  dom.autocompleteList.innerHTML = "";
+  if (!items.length) {
+    dom.autocompleteList.classList.remove("visible");
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = item.name;
+    button.addEventListener("click", () => {
+      dom.guessInput.value = item.name;
+      hideAutocomplete();
+      dom.guessInput.focus();
+    });
+    li.appendChild(button);
+    dom.autocompleteList.appendChild(li);
+  }
+  dom.autocompleteList.classList.add("visible");
+}
+
+async function fetchAutocomplete() {
+  const query = dom.guessInput.value.trim();
+  if (!state.lobbyId || query.length < 3 || dom.guessInput.disabled) {
+    hideAutocomplete();
+    return;
+  }
+  const params = new URLSearchParams({
+    q: query,
+    lobby_id: state.lobbyId,
+    limit: "10",
+  });
+  const payload = await apiRequest(`/api/autocomplete?${params.toString()}`);
+  renderAutocomplete(payload.suggestions || []);
+}
+
+function scheduleAutocomplete() {
+  if (state.autocompleteHandle) {
+    clearTimeout(state.autocompleteHandle);
+  }
+  state.autocompleteHandle = setTimeout(() => {
+    runAction(fetchAutocomplete);
+  }, 180);
+}
+
+async function createLobby() {
+  const hostName = dom.createHostName.value.trim();
+  const difficulty = dom.difficultySelect.value;
+  if (!hostName) {
+    setMessage("Enter a host name.");
+    return;
+  }
+
+  const payload = await apiRequest("/api/lobby/create", "POST", {
+    host_name: hostName,
+    difficulty,
+  });
+
+  state.lobbyId = payload.lobby_id;
+  state.token = payload.host_token;
+  state.isHost = true;
+  state.started = false;
+  state.gameOver = false;
+  state.clueIndex = 0;
+  dom.joinLobbyCode.value = payload.lobby_id;
+
+  showScreen("lobby");
+  if (payload.state) {
+    renderLobby(payload.state);
+  }
+  startPolling();
+}
+
+async function joinLobby() {
+  const lobbyId = dom.joinLobbyCode.value.trim().toUpperCase();
+  const playerName = dom.joinPlayerName.value.trim();
+  if (!lobbyId || !playerName) {
+    setMessage("Enter lobby code and player name.");
+    return;
+  }
+
+  const payload = await apiRequest("/api/lobby/join", "POST", {
+    lobby_id: lobbyId,
+    player_name: playerName,
+  });
+
+  state.lobbyId = lobbyId;
+  state.token = payload.player_token;
+  state.isHost = Boolean(payload.state && payload.state.is_host);
+  state.started = Boolean(payload.state && payload.state.started);
+  state.gameOver = false;
+  state.clueIndex = 0;
+
+  showScreen("lobby");
+  if (payload.state) {
+    renderLobby(payload.state);
+  }
+  startPolling();
+}
+
+async function startGame() {
+  if (!state.lobbyId || !state.token) {
+    setMessage("Lobby session missing.");
+    return;
+  }
+  const payload = await apiRequest(
+    `/api/lobby/${encodeURIComponent(state.lobbyId)}/start`,
+    "POST",
+    { host_token: state.token },
+  );
+  if (payload.state) {
+    renderGame(payload.state);
+  }
+}
+
+async function submitGuess() {
+  if (!state.lobbyId || !state.token || dom.guessInput.disabled) {
+    return;
+  }
+  const guessText = dom.guessInput.value.trim();
+  if (!guessText) {
+    setMessage("Type a guess first.");
+    return;
+  }
+  const payload = await apiRequest(
+    `/api/game/${encodeURIComponent(state.lobbyId)}/submit_guess`,
+    "POST",
+    {
+      player_token: state.token,
+      guess_text: guessText,
+    },
+  );
+
+  if (!payload.accepted && payload.reason) {
+    dom.guessStatusText.textContent = payload.reason;
+  } else if (payload.correct) {
+    dom.guessStatusText.textContent = "Correct! You're locked for the rest of this game.";
+  } else {
+    dom.guessStatusText.textContent = "Waiting for others...";
+  }
+  hideAutocomplete();
+  await refreshState();
+}
+
+async function shareLobbyLink() {
+  if (!state.lobbyId) {
+    return;
+  }
+  const shareUrl = buildShareUrl(state.lobbyId);
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    setMessage("Share link copied.", false);
+  } catch {
+    setMessage("Clipboard blocked. Copy manually: " + shareUrl);
+  }
+}
+
+async function playAgain() {
+  if (!state.isHost || !state.lobbyId || !state.token) {
+    return;
+  }
+  const payload = await apiRequest(
+    `/api/lobby/${encodeURIComponent(state.lobbyId)}/start`,
+    "POST",
+    { host_token: state.token },
+  );
+  state.started = true;
+  state.gameOver = false;
+  state.clueIndex = 0;
+  if (payload.state) {
+    renderGame(payload.state);
+  }
+}
+
+function resetSession() {
+  stopPolling();
+  hideAutocomplete();
+  state.lobbyId = null;
+  state.token = null;
+  state.isHost = false;
+  state.started = false;
+  state.gameOver = false;
+  state.clueIndex = 0;
+  state.latestLobby = null;
+  state.latestGame = null;
+  dom.guessInput.value = "";
+  dom.guessStatusText.textContent = "";
+  dom.answerText.textContent = "-";
+  dom.scoreboardList.innerHTML = "";
+  dom.finalScoreList.innerHTML = "";
+  history.replaceState({}, "", window.location.pathname);
+}
+
+async function runAction(action) {
+  try {
+    setMessage("");
+    await action();
+  } catch (error) {
+    setMessage(`Error: ${error.message}`);
+  }
+}
+
+function attachEvents() {
+  dom.playBtn.addEventListener("click", () => showScreen("setup"));
+  dom.backToMenuBtn.addEventListener("click", () => {
+    resetSession();
+    showScreen("menu");
+  });
+  dom.lobbyBackBtn.addEventListener("click", () => {
+    resetSession();
+    showScreen("setup");
+  });
+  dom.endBackToMenuBtn.addEventListener("click", () => {
+    resetSession();
+    showScreen("menu");
+  });
+
+  dom.createLobbyBtn.addEventListener("click", () => runAction(createLobby));
+  dom.joinLobbyBtn.addEventListener("click", () => runAction(joinLobby));
+  dom.startGameBtn.addEventListener("click", () => runAction(startGame));
+  dom.shareLinkBtn.addEventListener("click", () => runAction(shareLobbyLink));
+  dom.guessBtn.addEventListener("click", () => runAction(submitGuess));
+  dom.playAgainBtn.addEventListener("click", () => runAction(playAgain));
+
+  dom.guessInput.addEventListener("input", () => {
+    if (dom.guessInput.value.trim().length < 3) {
+      hideAutocomplete();
+      return;
+    }
+    scheduleAutocomplete();
+  });
+  dom.guessInput.addEventListener("blur", () => {
+    setTimeout(() => hideAutocomplete(), 120);
+  });
+}
+
+function init() {
+  dom.apiBase.value = resolveDefaultApiBase();
+  attachEvents();
+
+  const lobbyFromUrl = new URLSearchParams(window.location.search).get("lobby");
+  if (lobbyFromUrl) {
+    dom.joinLobbyCode.value = lobbyFromUrl.toUpperCase();
+    showScreen("setup");
+    setMessage("Enter your name to join the shared lobby.", false);
+  } else {
+    showScreen("menu");
+  }
+}
+
+init();

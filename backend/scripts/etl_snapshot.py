@@ -7,6 +7,7 @@ import random
 import re
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,7 @@ DISCOVERY_COUNTRY_PRIORITY = [
 class PlayerRecord:
     qid: str
     name: str | None = None
+    name_norm: str | None = None
     birth_date: str | None = None
     birth_year: int | None = None
     birth_place: str | None = None
@@ -62,6 +64,7 @@ class PlayerRecord:
     position_qid: str | None = None
     position_group: str | None = None
     height_cm: int | None = None
+    popularity: int = 0
 
 
 class SparqlClient:
@@ -169,13 +172,14 @@ SELECT DISTINCT ?country WHERE {
 def build_player_details_query(qids: list[str]) -> str:
     values = " ".join(f"wd:{qid}" for qid in qids)
     return f"""
-SELECT DISTINCT ?player ?playerLabel ?birthDate ?birthPlaceLabel ?citizenship ?citizenshipLabel ?position ?positionLabel ?height WHERE {{
+SELECT DISTINCT ?player ?playerLabel ?birthDate ?birthPlaceLabel ?citizenship ?citizenshipLabel ?position ?positionLabel ?height ?sitelinks WHERE {{
   VALUES ?player {{ {values} }}
   OPTIONAL {{ ?player wdt:P569 ?birthDate . }}
   OPTIONAL {{ ?player wdt:P19 ?birthPlace . }}
   OPTIONAL {{ ?player wdt:P27 ?citizenship . }}
   OPTIONAL {{ ?player wdt:P413 ?position . }}
   OPTIONAL {{ ?player wdt:P2048 ?height . }}
+  OPTIONAL {{ ?player wikibase:sitelinks ?sitelinks . }}
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
 }}
 """
@@ -395,9 +399,15 @@ def parse_player_records(
         if height_cm and not record.height_cm:
             record.height_cm = height_cm
 
+        sitelinks_raw = binding_value(binding, "sitelinks")
+        sitelinks = parse_non_negative_int(sitelinks_raw)
+        if sitelinks is not None:
+            record.popularity = max(record.popularity, sitelinks)
+
     for record in records.values():
         if not record.name:
             record.name = record.qid
+        record.name_norm = normalize_name(record.name)
         if record.position and not record.position_group:
             record.position_group = map_position_group(record.position)
     return records
@@ -407,12 +417,13 @@ def upsert_player(conn: Any, record: PlayerRecord) -> int:
     conn.execute(
         """
         INSERT INTO players(
-            wikidata_id, name, birth_date, birth_year, birth_place,
-            citizenship, citizenship_qid, position, position_group, height_cm
+            wikidata_id, name, name_norm, birth_date, birth_year, birth_place,
+            citizenship, citizenship_qid, position, position_group, height_cm, popularity
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(wikidata_id) DO UPDATE SET
             name = excluded.name,
+            name_norm = excluded.name_norm,
             birth_date = excluded.birth_date,
             birth_year = excluded.birth_year,
             birth_place = excluded.birth_place,
@@ -420,11 +431,13 @@ def upsert_player(conn: Any, record: PlayerRecord) -> int:
             citizenship_qid = excluded.citizenship_qid,
             position = excluded.position,
             position_group = excluded.position_group,
-            height_cm = excluded.height_cm
+            height_cm = excluded.height_cm,
+            popularity = excluded.popularity
         """,
         (
             record.qid,
             record.name,
+            record.name_norm,
             record.birth_date,
             record.birth_year,
             record.birth_place,
@@ -433,6 +446,7 @@ def upsert_player(conn: Any, record: PlayerRecord) -> int:
             record.position,
             record.position_group,
             record.height_cm,
+            record.popularity,
         ),
     )
     row = conn.execute(
@@ -645,6 +659,9 @@ def compute_stats_cache(conn: Any) -> None:
         {row["band"]: int(row["cnt"]) for row in club_band_rows},
     )
 
+    quantiles = compute_popularity_quantiles(conn)
+    persist_stat(conn, "difficulty::quantiles", quantiles)
+
 
 def persist_stat(conn: Any, key: str, value: dict[str, Any]) -> None:
     conn.execute(
@@ -655,6 +672,44 @@ def persist_stat(conn: Any, key: str, value: dict[str, Any]) -> None:
         """,
         (key, json.dumps(value, ensure_ascii=True)),
     )
+
+
+def compute_popularity_quantiles(conn: Any) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT popularity FROM playable_players ORDER BY popularity DESC, id ASC",
+    ).fetchall()
+    if not rows:
+        return {
+            "playable_count": 0,
+            "easy_min_popularity": 0,
+            "normal_min_popularity": 0,
+            "insane_max_popularity": 0,
+            "easy_count_target": 0,
+            "normal_count_target": 0,
+            "insane_count_target": 0,
+        }
+
+    popularity = [int(row["popularity"] or 0) for row in rows]
+    total = len(popularity)
+
+    easy_count = max(1, int(math.ceil(total * 0.2)))
+    normal_count = max(1, int(math.ceil(total * 0.5)))
+    insane_count = max(1, int(math.ceil(total * 0.3)))
+
+    easy_min = popularity[easy_count - 1]
+    normal_min = popularity[normal_count - 1]
+    insane_start_idx = max(0, total - insane_count)
+    insane_max = popularity[insane_start_idx]
+
+    return {
+        "playable_count": total,
+        "easy_min_popularity": int(easy_min),
+        "normal_min_popularity": int(normal_min),
+        "insane_max_popularity": int(insane_max),
+        "easy_count_target": easy_count,
+        "normal_count_target": normal_count,
+        "insane_count_target": insane_count,
+    }
 
 
 def clear_snapshot_tables(conn: Any) -> None:
@@ -717,6 +772,7 @@ def to_qid(uri: str | None) -> str | None:
 
 
 _YEAR_RE = re.compile(r"[-+]?\d{1,6}")
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]+")
 
 
 def parse_year(raw: str | None) -> int | None:
@@ -734,6 +790,31 @@ def parse_year(raw: str | None) -> int | None:
     if year > 3000:
         return None
     return year
+
+
+def parse_non_negative_int(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def normalize_name(value: str | None) -> str:
+    if not value:
+        return ""
+    no_accents = (
+        unicodedata.normalize("NFKD", value)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    cleaned = _NON_ALNUM_RE.sub(" ", no_accents)
+    return " ".join(cleaned.split())
 
 
 def normalize_date(raw: str | None) -> str | None:

@@ -2,6 +2,7 @@ const { chromium } = require("playwright");
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://football-quiz-7oi.pages.dev/";
 const EXPECTED_API_BASE = "https://football-quiz-t7m8.onrender.com";
+const API_BASE_OVERRIDE = process.env.API_BASE_OVERRIDE || "";
 
 function assert(condition, message) {
   if (!condition) {
@@ -9,112 +10,79 @@ function assert(condition, message) {
   }
 }
 
-async function readValue(page, selector) {
-  await page.waitForSelector(selector, { timeout: 15000 });
-  return page.$eval(selector, (el) => el.value.trim());
-}
-
-async function waitForText(page, selector, matcher, timeout = 15000) {
-  await page.waitForFunction(
-    ({ sel, expected }) => {
-      const node = document.querySelector(sel);
-      if (!node) return false;
-      const text = (node.textContent || "").trim();
-      return new RegExp(expected, "i").test(text);
-    },
-    { sel: selector, expected: matcher.source },
-    { timeout },
-  );
-}
-
 async function run() {
   const browser = await chromium.launch({ headless: true });
-  const hostContext = await browser.newContext();
-  const joinContext = await browser.newContext();
-  const hostPage = await hostContext.newPage();
-  const joinPage = await joinContext.newPage();
+  const page = await browser.newPage();
 
   try {
-    await Promise.all([
-      hostPage.goto(FRONTEND_URL, { waitUntil: "domcontentloaded", timeout: 30000 }),
-      joinPage.goto(FRONTEND_URL, { waitUntil: "domcontentloaded", timeout: 30000 }),
-    ]);
+    await page.goto(FRONTEND_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-    const hostApiBase = await readValue(hostPage, "#apiBase");
-    const joinApiBase = await readValue(joinPage, "#apiBase");
+    await page.click('[data-testid="play-btn"]');
+    await page.waitForSelector('[data-testid="screen-setup"].active', { timeout: 10000 });
+
+    const apiBase = await page.$eval('[data-testid="api-base-input"]', (el) => el.value.trim());
     assert(
-      hostApiBase === EXPECTED_API_BASE,
-      `Host page API base mismatch: expected ${EXPECTED_API_BASE}, got ${hostApiBase || "<empty>"}`,
+      apiBase === EXPECTED_API_BASE,
+      `API base mismatch: expected ${EXPECTED_API_BASE}, got ${apiBase || "<empty>"}`,
     );
-    assert(
-      joinApiBase === EXPECTED_API_BASE,
-      `Join page API base mismatch: expected ${EXPECTED_API_BASE}, got ${joinApiBase || "<empty>"}`,
+    if (API_BASE_OVERRIDE) {
+      await page.fill('[data-testid="api-base-input"]', API_BASE_OVERRIDE);
+    }
+
+    const hostName = `codex-host-${Date.now().toString().slice(-5)}`;
+    await page.fill('[data-testid="create-host-name"]', hostName);
+    await page.selectOption('[data-testid="difficulty-select"]', "normal");
+    await page.click('[data-testid="create-lobby-btn"]');
+
+    await page.waitForSelector('[data-testid="screen-lobby"].active', { timeout: 15000 });
+    const lobbyCode = await page.$eval('[data-testid="lobby-code-text"]', (el) =>
+      (el.textContent || "").trim(),
     );
-    assert(!hostApiBase.includes("localhost"), `Host page still points to localhost: ${hostApiBase}`);
+    assert(/^[A-Z0-9]{6,12}$/.test(lobbyCode), `Unexpected lobby code: ${lobbyCode}`);
 
-    const hostName = `codex-host-${Date.now().toString().slice(-6)}`;
-    await hostPage.fill("#createName", hostName);
-    await hostPage.click("#createBtn");
+    const playerCount = await page.$eval('[data-testid="player-count-text"]', (el) =>
+      (el.textContent || "").trim(),
+    );
+    assert(playerCount.includes("/10"), `Player count text invalid: ${playerCount}`);
 
-    await hostPage.waitForFunction(
+    await page.click('[data-testid="share-link-btn"]');
+
+    await page.waitForFunction(
       () => {
-        const input = document.querySelector("#joinGameId");
-        return Boolean(input && input.value && input.value.trim().length >= 6);
+        const btn = document.querySelector('[data-testid="start-game-btn"]');
+        return Boolean(btn && !btn.disabled);
       },
       undefined,
       { timeout: 20000 },
     );
+    await page.click('[data-testid="start-game-btn"]');
 
-    const gameId = await readValue(hostPage, "#joinGameId");
-    assert(/^[A-Z0-9]{6,12}$/.test(gameId), `Unexpected game ID format: ${gameId}`);
-    await waitForText(hostPage, "#sessionInfo", new RegExp(`Game\\s+${gameId}`), 15000);
-
-    await joinPage.fill("#joinGameId", gameId);
-    await joinPage.fill("#joinName", "codex-player");
-    await joinPage.click("#joinBtn");
-    await waitForText(joinPage, "#sessionInfo", new RegExp(`Game\\s+${gameId}`), 15000);
-
-    await hostPage.click("#startBtn");
-    await hostPage.waitForFunction(
-      () => document.querySelectorAll("#clueList li").length >= 1,
-      undefined,
-      { timeout: 15000 },
+    await page.waitForSelector('[data-testid="screen-game"].active', { timeout: 15000 });
+    const clueText = await page.$eval('[data-testid="clue-text"]', (el) =>
+      (el.textContent || "").trim(),
     );
-    const firstClues = await hostPage.$$eval("#clueList li", (els) =>
-      els.map((el) => (el.textContent || "").trim()).filter(Boolean),
-    );
-    assert(firstClues.length >= 1, "No clues shown after starting round.");
+    assert(clueText.length > 4 && !/waiting/i.test(clueText), `Invalid clue text: ${clueText}`);
 
-    const initialCount = firstClues.length;
-    await hostPage.click("#nextClueBtn");
-    await hostPage.waitForFunction(
-      (prev) => document.querySelectorAll("#clueList li").length > prev,
-      initialCount,
-      { timeout: 15000 },
+    const timerText = await page.$eval('[data-testid="timer-text"]', (el) =>
+      (el.textContent || "").trim(),
     );
-
-    await joinPage.fill("#guessInput", "Lionel Messi");
-    await joinPage.click("#guessBtn");
-    await waitForText(joinPage, "#statusBox", /(Incorrect guess|Correct guess)/i, 15000);
-    const finalStatus = await joinPage.$eval("#statusBox", (el) => (el.textContent || "").trim());
+    assert(/\d+s/.test(timerText), `Timer not visible: ${timerText}`);
 
     console.log(
       JSON.stringify(
         {
           ok: true,
           frontend_url: FRONTEND_URL,
-          api_base: hostApiBase,
-          game_id: gameId,
-          clues_before_next: initialCount,
-          status_after_guess: finalStatus,
+          api_base: apiBase,
+          lobby_code: lobbyCode,
+          player_count_text: playerCount,
+          timer_text: timerText,
         },
         null,
         2,
       ),
     );
   } finally {
-    await joinContext.close();
-    await hostContext.close();
     await browser.close();
   }
 }

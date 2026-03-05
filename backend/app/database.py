@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 
@@ -11,6 +13,7 @@ CREATE TABLE IF NOT EXISTS players(
     id INTEGER PRIMARY KEY,
     wikidata_id TEXT UNIQUE,
     name TEXT,
+    name_norm TEXT,
     birth_date TEXT,
     birth_year INTEGER,
     birth_place TEXT,
@@ -18,7 +21,8 @@ CREATE TABLE IF NOT EXISTS players(
     citizenship_qid TEXT,
     position TEXT,
     position_group TEXT,
-    height_cm INTEGER
+    height_cm INTEGER,
+    popularity INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS clubs(
@@ -68,6 +72,8 @@ ON player_national_teams(player_id, national_team_id);
 CREATE INDEX IF NOT EXISTS idx_players_birth_year ON players(birth_year);
 CREATE INDEX IF NOT EXISTS idx_players_citizenship_qid ON players(citizenship_qid);
 CREATE INDEX IF NOT EXISTS idx_players_position_group ON players(position_group);
+CREATE INDEX IF NOT EXISTS idx_players_name_norm ON players(name_norm);
+CREATE INDEX IF NOT EXISTS idx_players_popularity ON players(popularity);
 CREATE INDEX IF NOT EXISTS idx_player_clubs_player ON player_clubs(player_id);
 CREATE INDEX IF NOT EXISTS idx_player_clubs_club ON player_clubs(club_id);
 CREATE INDEX IF NOT EXISTS idx_player_national_teams_player ON player_national_teams(player_id);
@@ -103,4 +109,55 @@ def connect(db_path: Path | str, read_only: bool = False) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    _migrate_players_table(conn)
+    _backfill_players(conn)
     conn.commit()
+
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]+")
+
+
+def _normalize_name(value: str | None) -> str:
+    if not value:
+        return ""
+    no_accents = (
+        unicodedata.normalize("NFKD", value)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    cleaned = _NON_ALNUM_RE.sub(" ", no_accents)
+    return " ".join(cleaned.split())
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(str(row["name"]) == column_name for row in rows)
+
+
+def _migrate_players_table(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "players", "name_norm"):
+        conn.execute("ALTER TABLE players ADD COLUMN name_norm TEXT")
+    if not _column_exists(conn, "players", "popularity"):
+        conn.execute("ALTER TABLE players ADD COLUMN popularity INTEGER DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_players_name_norm ON players(name_norm)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_players_popularity ON players(popularity)")
+
+
+def _backfill_players(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        "SELECT id, name, name_norm, popularity FROM players",
+    ).fetchall()
+    updates: list[tuple[str, int, int]] = []
+    for row in rows:
+        normalized = str(row["name_norm"] or "").strip()
+        popularity = row["popularity"]
+        next_norm = normalized or _normalize_name(str(row["name"] or ""))
+        next_popularity = int(popularity) if popularity is not None else 0
+        if normalized != next_norm or popularity is None:
+            updates.append((next_norm, next_popularity, int(row["id"])))
+    if updates:
+        conn.executemany(
+            "UPDATE players SET name_norm = ?, popularity = ? WHERE id = ?",
+            updates,
+        )

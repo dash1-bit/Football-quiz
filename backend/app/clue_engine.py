@@ -18,21 +18,27 @@ class ClueCandidate:
 
 
 class ClueEngine:
-    def __init__(self, conn: sqlite3.Connection, rng: random.Random | None = None) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        rng: random.Random | None = None,
+        pool_where_sql: str = "1 = 1",
+        pool_params: tuple[Any, ...] = (),
+    ) -> None:
         self.conn = conn
         self.rng = rng or random.Random()
+        self.pool_where_sql = pool_where_sql
+        self.pool_params = pool_params
 
     def generate_for_player(self, player_id: int, clue_count: int = 10) -> list[dict[str, Any]]:
         target = self.conn.execute(
-            "SELECT * FROM playable_players WHERE id = ?",
-            (player_id,),
+            f"SELECT p.* FROM playable_players p WHERE p.id = ? AND ({self.pool_where_sql})",
+            (player_id, *self.pool_params),
         ).fetchone()
         if target is None:
             raise ValueError("Target player is not in playable pool.")
 
-        playable_count = self._count(
-            "SELECT COUNT(*) FROM playable_players",
-        )
+        playable_count = self._count_pool()
         if playable_count <= 0:
             raise ValueError("Playable pool is empty.")
 
@@ -64,7 +70,6 @@ class ClueEngine:
         if not selected:
             raise ValueError("Failed to select clues.")
 
-        # Ensure the final clue remains highly specific when possible.
         most_specific = min(filtered.values(), key=lambda clue: clue.match_count)
         if most_specific not in selected:
             selected[-1] = most_specific
@@ -134,15 +139,9 @@ class ClueEngine:
         citizenship = target["citizenship"]
         if citizenship:
             if citizenship_qid:
-                match_count = self._count(
-                    "SELECT COUNT(*) FROM playable_players WHERE citizenship_qid = ?",
-                    (citizenship_qid,),
-                )
+                match_count = self._count_pool("p.citizenship_qid = ?", (citizenship_qid,))
             else:
-                match_count = self._count(
-                    "SELECT COUNT(*) FROM playable_players WHERE citizenship = ?",
-                    (citizenship,),
-                )
+                match_count = self._count_pool("p.citizenship = ?", (citizenship,))
             out.append(
                 ClueCandidate(
                     clue_type="citizenship",
@@ -181,8 +180,8 @@ class ClueEngine:
                         decade=decade_start,
                     ),
                     predicate={"type": "birth_decade", "start": decade_start, "end": decade_end},
-                    match_count=self._count(
-                        "SELECT COUNT(*) FROM playable_players WHERE birth_year BETWEEN ? AND ?",
+                    match_count=self._count_pool(
+                        "p.birth_year BETWEEN ? AND ?",
                         (decade_start, decade_end),
                     ),
                 )
@@ -200,10 +199,7 @@ class ClueEngine:
                         year=birth_year,
                     ),
                     predicate={"type": "birth_year", "year": birth_year},
-                    match_count=self._count(
-                        "SELECT COUNT(*) FROM playable_players WHERE birth_year = ?",
-                        (birth_year,),
-                    ),
+                    match_count=self._count_pool("p.birth_year = ?", (birth_year,)),
                 )
             )
 
@@ -222,10 +218,7 @@ class ClueEngine:
                         group=position_group,
                     ),
                     predicate={"type": "position_group", "value": position_group},
-                    match_count=self._count(
-                        "SELECT COUNT(*) FROM playable_players WHERE position_group = ?",
-                        (position_group,),
-                    ),
+                    match_count=self._count_pool("p.position_group = ?", (position_group,)),
                 )
             )
 
@@ -244,10 +237,7 @@ class ClueEngine:
                         position=position,
                     ),
                     predicate={"type": "position", "value": position},
-                    match_count=self._count(
-                        "SELECT COUNT(*) FROM playable_players WHERE lower(position) = lower(?)",
-                        (position,),
-                    ),
+                    match_count=self._count_pool("lower(p.position) = lower(?)", (position,)),
                 )
             )
 
@@ -257,15 +247,9 @@ class ClueEngine:
             if band is not None:
                 label, min_cm, max_cm = band
                 if max_cm is None:
-                    count = self._count(
-                        "SELECT COUNT(*) FROM playable_players WHERE height_cm >= ?",
-                        (min_cm,),
-                    )
+                    count = self._count_pool("p.height_cm >= ?", (min_cm,))
                 else:
-                    count = self._count(
-                        "SELECT COUNT(*) FROM playable_players WHERE height_cm BETWEEN ? AND ?",
-                        (min_cm, max_cm),
-                    )
+                    count = self._count_pool("p.height_cm BETWEEN ? AND ?", (min_cm, max_cm))
                 out.append(
                     ClueCandidate(
                         clue_type="height_band",
@@ -303,13 +287,14 @@ class ClueEngine:
         out: list[ClueCandidate] = []
         for row in rows:
             match_count = self._count(
-                """
+                f"""
                 SELECT COUNT(DISTINCT p.id)
                 FROM playable_players p
                 JOIN player_clubs pc ON pc.player_id = p.id
                 WHERE pc.club_id = ?
+                  AND ({self.pool_where_sql})
                 """,
-                (row["id"],),
+                (row["id"], *self.pool_params),
             )
             out.append(
                 ClueCandidate(
@@ -347,13 +332,14 @@ class ClueEngine:
         out: list[ClueCandidate] = []
         for row in rows:
             match_count = self._count(
-                """
+                f"""
                 SELECT COUNT(DISTINCT p.id)
                 FROM playable_players p
                 JOIN player_national_teams pnt ON pnt.player_id = p.id
                 WHERE pnt.national_team_id = ?
+                  AND ({self.pool_where_sql})
                 """,
-                (row["id"],),
+                (row["id"], *self.pool_params),
             )
             out.append(
                 ClueCandidate(
@@ -398,29 +384,31 @@ class ClueEngine:
 
         if max_count is None:
             match_count = self._count(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM playable_players p
-                WHERE (
+                WHERE ({self.pool_where_sql})
+                  AND (
                     SELECT COUNT(DISTINCT pc.club_id)
                     FROM player_clubs pc
                     WHERE pc.player_id = p.id
-                ) >= ?
+                  ) >= ?
                 """,
-                (min_count,),
+                (*self.pool_params, min_count),
             )
         else:
             match_count = self._count(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM playable_players p
-                WHERE (
+                WHERE ({self.pool_where_sql})
+                  AND (
                     SELECT COUNT(DISTINCT pc.club_id)
                     FROM player_clubs pc
                     WHERE pc.player_id = p.id
-                ) BETWEEN ? AND ?
+                  ) BETWEEN ? AND ?
                 """,
-                (min_count, max_count),
+                (*self.pool_params, min_count, max_count),
             )
 
         return [
@@ -486,8 +474,9 @@ class ClueEngine:
                 JOIN player_clubs pc ON pc.player_id = p.id
                 JOIN clubs c ON c.id = pc.club_id
                 WHERE c.qid IN ({placeholders})
+                  AND ({self.pool_where_sql})
                 """,
-                tuple(related_clubs),
+                (*related_clubs, *self.pool_params),
             )
 
             out.append(
@@ -547,9 +536,16 @@ class ClueEngine:
         template = self.rng.choice(templates)
         return template.format(**kwargs)
 
+    def _count_pool(self, extra_sql: str = "", extra_params: tuple[Any, ...] = ()) -> int:
+        query = f"SELECT COUNT(*) FROM playable_players p WHERE ({self.pool_where_sql})"
+        params: tuple[Any, ...] = self.pool_params
+        if extra_sql:
+            query += f" AND ({extra_sql})"
+            params = params + extra_params
+        return self._count(query, params)
+
     def _count(self, sql: str, params: tuple[Any, ...] = ()) -> int:
         row = self.conn.execute(sql, params).fetchone()
         if row is None:
             return 0
         return int(row[0])
-

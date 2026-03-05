@@ -3,87 +3,127 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Football Quiz Multiplayer</title>
+    <title>Football Quiz</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>Football Quiz</h1>
-      <p class="subtitle">Progressive clues. First correct guess wins the round.</p>
-
-      <section class="panel">
-        <h2>Connection</h2>
-        <label>
-          API Base URL
-          <input id="apiBase" value="" />
-        </label>
+    <main class="app-shell">
+      <section id="screenMenu" class="screen active" data-testid="screen-menu">
+        <h1>Football Quiz</h1>
+        <p class="muted">Guess the player in up to 10 clues.</p>
+        <button id="playBtn" class="primary-btn" data-testid="play-btn">Play</button>
       </section>
 
-      <section class="panel grid">
-        <div>
-          <h2>Create Game</h2>
+      <section id="screenSetup" class="screen" data-testid="screen-setup">
+        <header class="screen-header">
+          <h2>Play Setup</h2>
+          <button id="backToMenuBtn" class="ghost-btn" data-testid="back-to-menu-btn">Back</button>
+        </header>
+
+        <div class="card" data-testid="create-panel">
+          <h3>Create game</h3>
           <label>
-            Your Name
-            <input id="createName" placeholder="Host name" />
-          </label>
-          <button id="createBtn">Create</button>
-        </div>
-        <div>
-          <h2>Join Game</h2>
-          <label>
-            Game ID
-            <input id="joinGameId" placeholder="ABC123" />
+            Host name
+            <input id="createHostName" data-testid="create-host-name" maxlength="50" />
           </label>
           <label>
-            Your Name
-            <input id="joinName" placeholder="Player name" />
+            Difficulty
+            <select id="difficultySelect" data-testid="difficulty-select">
+              <option value="easy">Easy</option>
+              <option value="normal" selected>Normal</option>
+              <option value="hard">Hard</option>
+              <option value="insane">Insane</option>
+            </select>
           </label>
-          <button id="joinBtn">Join</button>
+          <p class="hint">1-10 players</p>
+          <button id="createLobbyBtn" class="primary-btn" data-testid="create-lobby-btn">Create Lobby</button>
+        </div>
+
+        <div class="card" data-testid="join-panel">
+          <h3>Join game</h3>
+          <label>
+            Lobby code
+            <input id="joinLobbyCode" data-testid="join-lobby-code" maxlength="12" />
+          </label>
+          <label>
+            Player name
+            <input id="joinPlayerName" data-testid="join-player-name" maxlength="50" />
+          </label>
+          <button id="joinLobbyBtn" class="primary-btn" data-testid="join-lobby-btn">Join</button>
+        </div>
+
+        <div class="card card-compact">
+          <label>
+            API Base URL
+            <input id="apiBase" data-testid="api-base-input" />
+          </label>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Session</h2>
-        <p id="sessionInfo">Not connected.</p>
-        <div class="actions">
-          <button id="refreshBtn">Refresh State</button>
-          <button id="startBtn">Start Round</button>
-          <button id="nextClueBtn">Reveal Next Clue</button>
+      <section id="screenLobby" class="screen" data-testid="screen-lobby">
+        <header class="screen-header">
+          <h2>Lobby</h2>
+          <button id="lobbyBackBtn" class="ghost-btn" data-testid="lobby-back-btn">Back</button>
+        </header>
+
+        <div class="card">
+          <p class="label">Lobby code</p>
+          <p id="lobbyCodeText" class="code" data-testid="lobby-code-text">------</p>
+          <button id="shareLinkBtn" class="primary-btn" data-testid="share-link-btn">Share link</button>
+          <p id="playerCountText" class="hint" data-testid="player-count-text">0/10 players</p>
+          <ul id="lobbyPlayersList" class="player-list" data-testid="lobby-players-list"></ul>
+          <p class="hint">No one can join after the game starts.</p>
+          <button id="startGameBtn" class="primary-btn" data-testid="start-game-btn" disabled>Start Game</button>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Clues</h2>
-        <ol id="clueList"></ol>
+      <section id="screenGame" class="screen" data-testid="screen-game">
+        <header class="screen-header">
+          <h2>Round <span id="clueIndexText" data-testid="clue-index-text">1</span>/10</h2>
+          <p id="timerText" class="timer" data-testid="timer-text">60s</p>
+        </header>
+
+        <div class="card">
+          <p id="clueText" class="clue" data-testid="clue-text">Waiting for clue...</p>
+          <div class="guess-area">
+            <label>
+              Player name
+              <input
+                id="guessInput"
+                data-testid="guess-input"
+                maxlength="120"
+                autocomplete="off"
+              />
+            </label>
+            <ul id="autocompleteList" class="autocomplete" data-testid="autocomplete-list"></ul>
+            <button id="guessBtn" class="primary-btn" data-testid="guess-btn">Guess</button>
+            <p id="guessStatusText" class="hint" data-testid="guess-status-text"></p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Scoreboard</h3>
+          <ul id="scoreboardList" class="player-list" data-testid="scoreboard-list"></ul>
+        </div>
       </section>
 
-      <section class="panel">
-        <h2>Guess</h2>
-        <label>
-          Player Name
-          <input id="guessInput" placeholder="Type your guess" />
-        </label>
-        <button id="guessBtn">Submit Guess</button>
+      <section id="screenEnd" class="screen" data-testid="screen-end">
+        <h2>Game Over</h2>
+        <p class="label">Correct player</p>
+        <p id="answerText" class="answer" data-testid="answer-text">-</p>
+
+        <div class="card">
+          <h3>Final scores</h3>
+          <ul id="finalScoreList" class="player-list" data-testid="final-score-list"></ul>
+        </div>
+
+        <button id="playAgainBtn" class="primary-btn" data-testid="play-again-btn">Play again</button>
+        <button id="endBackToMenuBtn" class="ghost-btn" data-testid="end-back-to-menu-btn">Back to menu</button>
       </section>
 
-      <section class="panel">
-        <h2>Scoreboard</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Player</th>
-              <th>Score</th>
-            </tr>
-          </thead>
-          <tbody id="scoreboardBody"></tbody>
-        </table>
-      </section>
-
-      <section class="panel">
-        <h2>Status</h2>
-        <pre id="statusBox"></pre>
-      </section>
+      <p id="globalMessage" class="global-message" data-testid="global-message"></p>
     </main>
+
     <script src="./config.js"></script>
     <script src="./app.js"></script>
   </body>
