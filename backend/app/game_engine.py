@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+from collections import OrderedDict
 import math
 import random
 import re
@@ -16,13 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from .clue_engine import ClueEngine
-from .database import connect, init_db
+from .database import connect, create_or_replace_famous_view, init_db
 
 
 DIFFICULTY_MODES = {"EASY", "NORMAL", "HARD", "INSANE"}
 MAX_PLAYERS_PER_LOBBY = 10
 MAX_CLUES_PER_GAME = 10
 ROUND_SECONDS_TOTAL = 60
+AUTOCOMPLETE_CACHE_TTL_SECONDS = 30.0
+AUTOCOMPLETE_CACHE_MAX_ENTRIES = 64
 
 
 class GameError(Exception):
@@ -34,10 +36,18 @@ class GameError(Exception):
 @dataclass(frozen=True)
 class DifficultyPool:
     difficulty: str
+    pool_type: str
+    source_view: str
     where_sql: str
     params: tuple[Any, ...]
     candidate_count: int
-    thresholds: dict[str, Any]
+    pool_params: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AutocompleteCacheEntry:
+    results: list[dict[str, str]]
+    expires_at: float
 
 
 @dataclass
@@ -65,16 +75,26 @@ class LobbyState:
     target_player_id: int | None = None
     target_name: str | None = None
     clues: list[dict[str, Any]] = field(default_factory=list)
+    candidate_pool: DifficultyPool | None = None
     clue_index: int = 0
     round_start_ts: float = 0.0
     round_seconds_total: int = ROUND_SECONDS_TOTAL
+    autocomplete_cache: OrderedDict[str, AutocompleteCacheEntry] = field(default_factory=OrderedDict)
     recent_target_ids: list[int] = field(default_factory=list)
 
 
 class GameManager:
-    def __init__(self, db_path: Path, scoring_curve: tuple[int, ...]) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        scoring_curve: tuple[int, ...],
+        famous_pool_size: int = 2500,
+        min_birth_year: int = 1950,
+    ) -> None:
         self.db_path = Path(db_path)
         self.scoring_curve = scoring_curve
+        self.famous_pool_size = max(100, int(famous_pool_size))
+        self.min_birth_year = max(1800, int(min_birth_year))
         self.lobbies: dict[str, LobbyState] = {}
         self.lock = threading.Lock()
         self.rng = random.Random()
@@ -153,8 +173,10 @@ class GameManager:
             lobby.target_player_id = target_id
             lobby.target_name = target_name
             lobby.clues = clues[:MAX_CLUES_PER_GAME]
+            lobby.candidate_pool = pool
             lobby.clue_index = 1
             lobby.round_start_ts = time.time()
+            lobby.autocomplete_cache.clear()
             for player in lobby.players.values():
                 player.score = 0
                 player.has_solved = False
@@ -246,8 +268,16 @@ class GameManager:
 
         with self.lock:
             lobby = self._get_lobby(lobby_id)
+            self._prune_autocomplete_cache(lobby, now_ts=time.time())
+            cache_key = f"{normalized}|{limit}"
+            cached = lobby.autocomplete_cache.get(cache_key)
+            now_ts = time.time()
+            if cached and cached.expires_at > now_ts:
+                lobby.autocomplete_cache.move_to_end(cache_key)
+                return list(cached.results)
+
             with connect(self.db_path, read_only=True) as conn:
-                pool = self._build_pool(conn, lobby.difficulty)
+                pool = self._pool_for_lobby(conn, lobby)
                 has_name_norm = self._has_player_column(conn, "name_norm")
                 has_popularity = self._has_player_column(conn, "popularity")
                 name_norm_expr = self._name_norm_expr("p", has_name_norm)
@@ -255,7 +285,7 @@ class GameManager:
                 rows = conn.execute(
                     f"""
                     SELECT p.name, p.wikidata_id
-                    FROM playable_players p
+                    FROM {pool.source_view} p
                     WHERE ({pool.where_sql})
                       AND ({name_norm_expr} LIKE ? OR {name_norm_expr} LIKE ?)
                     ORDER BY
@@ -272,10 +302,18 @@ class GameManager:
                         limit,
                     ),
                 ).fetchall()
-        return [
+        results = [
             {"name": str(row["name"]), "wikidata_id": str(row["wikidata_id"])}
             for row in rows
         ]
+        with self.lock:
+            lobby = self._get_lobby(lobby_id)
+            lobby.autocomplete_cache[cache_key] = AutocompleteCacheEntry(
+                results=results,
+                expires_at=time.time() + AUTOCOMPLETE_CACHE_TTL_SECONDS,
+            )
+            self._trim_autocomplete_cache(lobby)
+        return results
 
     def create_game(self, player_name: str) -> dict[str, Any]:
         payload = self.create_lobby(host_name=player_name, difficulty="NORMAL")
@@ -320,9 +358,8 @@ class GameManager:
             return self._legacy_state(self._serialize_game(lobby, player_id))
 
     def _legacy_state(self, state: dict[str, Any]) -> dict[str, Any]:
-        clue_index = int(state.get("clue_index") or 0)
-        all_clues = state.get("all_clues") or []
-        revealed_clues = all_clues[: clue_index] if clue_index > 0 else []
+        clue_index = int(state.get("current_clue_index") or state.get("clue_index") or 0)
+        revealed_clues = list(state.get("clues_revealed") or [])
         return {
             "game_id": state.get("lobby_id"),
             "status": "round_finished" if state.get("game_over") else ("in_round" if state.get("started") else "lobby"),
@@ -346,7 +383,7 @@ class GameManager:
                     "round_number": clue_index,
                     "status": "finished" if state.get("game_over") else "active",
                     "revealed_count": len(revealed_clues),
-                    "total_clues": len(all_clues),
+                    "total_clues": MAX_CLUES_PER_GAME,
                     "revealed_clues": revealed_clues,
                     "winner_player_id": None,
                     "winner_name": None,
@@ -377,9 +414,11 @@ class GameManager:
     def _serialize_game(self, lobby: LobbyState, token: str | None) -> dict[str, Any]:
         now_ts = time.time()
         round_seconds_left = 0
+        round_end_ts: float | None = None
         if lobby.started and not lobby.game_over and lobby.round_start_ts > 0:
             elapsed = max(0.0, now_ts - lobby.round_start_ts)
             round_seconds_left = max(0, int(math.ceil(lobby.round_seconds_total - elapsed)))
+            round_end_ts = lobby.round_start_ts + lobby.round_seconds_total
 
         players_sorted = sorted(lobby.players.values(), key=lambda part: part.name.lower())
         players_payload = [
@@ -403,8 +442,21 @@ class GameManager:
 
         me = lobby.players.get(token) if token else None
         current_clue_text = None
+        clues_revealed: list[str] = []
         if lobby.started and not lobby.game_over and 1 <= lobby.clue_index <= len(lobby.clues):
             current_clue_text = lobby.clues[lobby.clue_index - 1]["text"]
+        if lobby.started and lobby.clues:
+            revealed_len = max(0, min(lobby.clue_index, len(lobby.clues)))
+            clues_revealed = [str(clue.get("text", "")) for clue in lobby.clues[:revealed_len]]
+
+        pool_payload: dict[str, Any] | None = None
+        if lobby.candidate_pool is not None:
+            pool_payload = {
+                "pool_type": lobby.candidate_pool.pool_type,
+                "source_view": lobby.candidate_pool.source_view,
+                "candidate_count": lobby.candidate_pool.candidate_count,
+                "parameters": dict(lobby.candidate_pool.pool_params),
+            }
 
         return {
             "lobby_id": lobby.id,
@@ -412,13 +464,17 @@ class GameManager:
             "started": lobby.started,
             "game_over": lobby.game_over,
             "difficulty": lobby.difficulty.lower(),
+            "current_clue_index": lobby.clue_index,
             "clue_index": lobby.clue_index,
             "current_clue_text": current_clue_text,
+            "clues_revealed": clues_revealed,
             "round_seconds_total": lobby.round_seconds_total,
             "round_seconds_left": round_seconds_left,
+            "round_end_ts": round_end_ts,
             "players": players_payload,
             "scoreboard": scoreboard,
             "answer_name": lobby.target_name if lobby.game_over else None,
+            "pool_filter": pool_payload,
             "you_token": token,
             "you_name": me.name if me else None,
             "you_has_solved": me.has_solved if me else False,
@@ -431,7 +487,6 @@ class GameManager:
             "can_guess": bool(me) and lobby.started and not lobby.game_over and (not me.has_solved) and (
                 me.last_submitted_round != lobby.clue_index
             ),
-            "all_clues": lobby.clues,
         }
 
     def _auto_advance_if_needed(self, lobby: LobbyState, now_ts: float) -> None:
@@ -466,25 +521,63 @@ class GameManager:
         lobby.round_start_ts = now_ts
 
     def _build_pool(self, conn: sqlite3.Connection, difficulty: str) -> DifficultyPool:
-        thresholds = self._load_or_compute_thresholds(conn)
         mode = self._normalize_difficulty(difficulty)
         has_popularity = self._has_player_column(conn, "popularity")
-        popularity_expr = self._popularity_expr("p", has_popularity)
+        famous_count = int(conn.execute("SELECT COUNT(*) FROM famous_players").fetchone()[0])
+        playable_count = int(conn.execute("SELECT COUNT(*) FROM playable_players").fetchone()[0])
+
         if mode == "EASY":
-            where_sql = f"{popularity_expr} >= ?"
-            params = (int(thresholds["easy_min_popularity"]),)
+            top_count = max(1, int(math.ceil(famous_count * 0.05)))
+            where_sql = f"""
+                p.id IN (
+                    SELECT fp.id
+                    FROM famous_players fp
+                    ORDER BY COALESCE(fp.popularity, 0) DESC, fp.id ASC
+                    LIMIT ?
+                )
+            """
+            params = (top_count,)
+            source_view = "playable_players"
+            pool_type = "famous_top_5"
+            pool_params = {
+                "famous_pool_size": famous_count,
+                "easy_top_count": top_count,
+                "percent": 5,
+            }
         elif mode == "NORMAL":
-            where_sql = f"{popularity_expr} >= ?"
-            params = (int(thresholds["normal_min_popularity"]),)
-        elif mode == "INSANE":
-            where_sql = f"{popularity_expr} <= ?"
-            params = (int(thresholds["insane_max_popularity"]),)
+            where_sql = "p.id IN (SELECT fp.id FROM famous_players fp)"
+            params = ()
+            source_view = "playable_players"
+            pool_type = "famous_all"
+            pool_params = {"famous_pool_size": famous_count}
+        elif mode == "HARD":
+            top_count = max(1, int(math.ceil(playable_count * 0.5)))
+            where_sql = f"""
+                p.id IN (
+                    SELECT pp.id
+                    FROM playable_players pp
+                    ORDER BY {self._popularity_expr('pp', has_popularity)} DESC, pp.id ASC
+                    LIMIT ?
+                )
+            """
+            params = (top_count,)
+            source_view = "playable_players"
+            pool_type = "playable_top_50"
+            pool_params = {"playable_pool_size": playable_count, "hard_top_count": top_count, "percent": 50}
         else:
             where_sql = "1 = 1"
             params = ()
+            source_view = "playable_players"
+            pool_type = "playable_all"
+            pool_params = {"playable_pool_size": playable_count}
+
+        if mode in {"EASY", "NORMAL"} and famous_count <= 0:
+            raise GameError("Famous pool is empty. Adjust FAMOUS_POOL_SIZE/MIN_BIRTH_YEAR.", status_code=409)
+        if playable_count <= 0:
+            raise GameError("Playable pool is empty. Run ETL first.", status_code=409)
 
         count_row = conn.execute(
-            f"SELECT COUNT(*) FROM playable_players p WHERE ({where_sql})",
+            f"SELECT COUNT(*) FROM {source_view} p WHERE ({where_sql})",
             params,
         ).fetchone()
         candidate_count = int(count_row[0]) if count_row else 0
@@ -492,72 +585,13 @@ class GameManager:
             raise GameError("No candidates available for this difficulty.", status_code=409)
         return DifficultyPool(
             difficulty=mode,
+            pool_type=pool_type,
+            source_view=source_view,
             where_sql=where_sql,
             params=params,
             candidate_count=candidate_count,
-            thresholds=thresholds,
+            pool_params=pool_params,
         )
-
-    def _load_or_compute_thresholds(self, conn: sqlite3.Connection) -> dict[str, Any]:
-        row = conn.execute(
-            "SELECT value_json FROM stats_cache WHERE key = 'difficulty::quantiles'",
-        ).fetchone()
-        if row and row["value_json"]:
-            try:
-                payload = json.loads(str(row["value_json"]))
-            except json.JSONDecodeError:
-                payload = None
-            if isinstance(payload, dict) and payload.get("playable_count", 0) > 0:
-                return payload
-
-        payload = self._compute_thresholds(conn)
-        try:
-            conn.execute(
-                """
-                INSERT INTO stats_cache(key, value_json)
-                VALUES ('difficulty::quantiles', ?)
-                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
-                """,
-                (json.dumps(payload, ensure_ascii=True),),
-            )
-        except sqlite3.OperationalError:
-            # Read-only deployments can still compute thresholds at runtime.
-            pass
-        return payload
-
-    def _compute_thresholds(self, conn: sqlite3.Connection) -> dict[str, Any]:
-        has_popularity = self._has_player_column(conn, "popularity")
-        popularity_expr = self._popularity_expr("p", has_popularity)
-        rows = conn.execute(
-            f"""
-            SELECT {popularity_expr} AS popularity
-            FROM playable_players p
-            ORDER BY popularity DESC, p.id ASC
-            """,
-        ).fetchall()
-        if not rows:
-            raise GameError("Playable pool is empty. Run ETL first.", status_code=409)
-        popularity = [int(row["popularity"] or 0) for row in rows]
-        n = len(popularity)
-
-        easy_count = max(1, int(math.ceil(n * 0.2)))
-        normal_count = max(1, int(math.ceil(n * 0.5)))
-        insane_count = max(1, int(math.ceil(n * 0.3)))
-
-        easy_min = popularity[easy_count - 1]
-        normal_min = popularity[normal_count - 1]
-        insane_start_idx = max(0, n - insane_count)
-        insane_max = popularity[insane_start_idx]
-
-        return {
-            "playable_count": n,
-            "easy_min_popularity": int(easy_min),
-            "normal_min_popularity": int(normal_min),
-            "insane_max_popularity": int(insane_max),
-            "easy_count_target": easy_count,
-            "normal_count_target": normal_count,
-            "insane_count_target": insane_count,
-        }
 
     def _pick_target_player(
         self,
@@ -574,7 +608,7 @@ class GameManager:
             params.extend(recent_targets[-10:])
 
         count_row = conn.execute(
-            f"SELECT COUNT(*) FROM playable_players p WHERE {base_where}",
+            f"SELECT COUNT(*) FROM {pool.source_view} p WHERE {base_where}",
             tuple(params),
         ).fetchone()
         candidate_count = int(count_row[0]) if count_row else 0
@@ -583,7 +617,7 @@ class GameManager:
             base_where = f"({pool.where_sql})"
             params = list(pool.params)
             count_row = conn.execute(
-                f"SELECT COUNT(*) FROM playable_players p WHERE {base_where}",
+                f"SELECT COUNT(*) FROM {pool.source_view} p WHERE {base_where}",
                 tuple(params),
             ).fetchone()
             candidate_count = int(count_row[0]) if count_row else 0
@@ -592,7 +626,7 @@ class GameManager:
 
         random_offset = self.rng.randint(0, candidate_count - 1)
         row = conn.execute(
-            f"SELECT p.id, p.name FROM playable_players p WHERE {base_where} LIMIT 1 OFFSET ?",
+            f"SELECT p.id, p.name FROM {pool.source_view} p WHERE {base_where} LIMIT 1 OFFSET ?",
             (*params, random_offset),
         ).fetchone()
         if row is None:
@@ -613,10 +647,33 @@ class GameManager:
             return f"COALESCE({alias}.name_norm, lower({alias}.name))"
         return f"lower({alias}.name)"
 
+    def _pool_for_lobby(self, conn: sqlite3.Connection, lobby: LobbyState) -> DifficultyPool:
+        if lobby.candidate_pool is not None:
+            return lobby.candidate_pool
+        pool = self._build_pool(conn, lobby.difficulty)
+        if lobby.started:
+            lobby.candidate_pool = pool
+        return pool
+
+    def _prune_autocomplete_cache(self, lobby: LobbyState, now_ts: float) -> None:
+        stale_keys = [key for key, entry in lobby.autocomplete_cache.items() if entry.expires_at <= now_ts]
+        for key in stale_keys:
+            lobby.autocomplete_cache.pop(key, None)
+
+    def _trim_autocomplete_cache(self, lobby: LobbyState) -> None:
+        while len(lobby.autocomplete_cache) > AUTOCOMPLETE_CACHE_MAX_ENTRIES:
+            lobby.autocomplete_cache.popitem(last=False)
+
     def _ensure_db(self) -> None:
         try:
             with connect(self.db_path) as conn:
                 init_db(conn)
+                create_or_replace_famous_view(
+                    conn,
+                    famous_pool_size=self.famous_pool_size,
+                    min_birth_year=self.min_birth_year,
+                )
+                conn.commit()
         except sqlite3.OperationalError:
             with connect(self.db_path, read_only=True) as conn:
                 conn.execute("SELECT 1").fetchone()

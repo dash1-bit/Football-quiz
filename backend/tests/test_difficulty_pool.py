@@ -10,14 +10,15 @@ def seed_pool(conn) -> None:
     conn.execute("INSERT INTO clubs(id, name, qid) VALUES (1, 'Test Club', 'QTESTCLUB')")
     players = []
     player_clubs = []
-    for idx in range(1, 11):
+    for idx in range(1, 301):
+        birth_year = 1940 if idx <= 30 else 1950 + (idx % 40)
         players.append(
             (
                 idx,
                 f"Q{idx}",
                 f"Player {idx}",
                 f"player {idx}",
-                1990,
+                birth_year,
                 "Testland",
                 "QTEST",
                 "midfielder",
@@ -45,21 +46,33 @@ def seed_pool(conn) -> None:
     conn.commit()
 
 
-def test_easy_pool_uses_top_20_percent_popularity(tmp_path: Path) -> None:
+def test_famous_pool_and_easy_top_5_percent(tmp_path: Path) -> None:
     db_path = tmp_path / "difficulty.sqlite"
     with connect(db_path) as conn:
         init_db(conn)
         seed_pool(conn)
 
-    manager = GameManager(db_path=db_path, scoring_curve=(10, 9, 8, 7, 6, 5, 4, 3, 2, 1))
+    manager = GameManager(
+        db_path=db_path,
+        scoring_curve=(10, 9, 8, 7, 6, 5, 4, 3, 2, 1),
+        famous_pool_size=120,
+        min_birth_year=1950,
+    )
     with connect(db_path) as conn:
+        famous_count = int(conn.execute("SELECT COUNT(*) FROM famous_players").fetchone()[0])
+        min_famous_birth_year = int(
+            conn.execute("SELECT MIN(birth_year) FROM famous_players").fetchone()[0],
+        )
         pool = manager._build_pool(conn, "easy")
-        assert pool.candidate_count == 2
+        normal_pool = manager._build_pool(conn, "normal")
+        assert normal_pool.candidate_count == 120
+        assert pool.candidate_count == 6
         rows = conn.execute(
-            f"SELECT popularity FROM playable_players p WHERE ({pool.where_sql}) ORDER BY popularity DESC",
+            f"SELECT popularity FROM {pool.source_view} p WHERE ({pool.where_sql}) ORDER BY popularity DESC",
             pool.params,
         ).fetchall()
 
+    assert famous_count == 120
+    assert min_famous_birth_year >= 1950
     values = [int(row["popularity"]) for row in rows]
-    assert values == [10, 9]
-    assert min(values) >= 9
+    assert values == [300, 299, 298, 297, 296, 295]

@@ -19,6 +19,8 @@ class Settings:
     cors_allow_origins: tuple[str, ...]
     max_players: int
     full_snapshot_max_players: int
+    famous_pool_size: int
+    min_birth_year: int
     wikidata_endpoint: str
     wikidata_user_agent: str
 
@@ -69,6 +71,8 @@ def load_settings() -> Settings:
     cors_allow_origins = _parse_allow_origins(os.getenv("CORS_ALLOW_ORIGINS", "*"))
     max_players = int(os.getenv("MAX_PLAYERS", "20000"))
     full_snapshot_max_players = int(os.getenv("FULL_SNAPSHOT_MAX_PLAYERS", "200000"))
+    famous_pool_size = int(os.getenv("FAMOUS_POOL_SIZE", "2500"))
+    min_birth_year = int(os.getenv("MIN_BIRTH_YEAR", "1950"))
 
     return Settings(
         db_path=db_path,
@@ -77,6 +81,8 @@ def load_settings() -> Settings:
         cors_allow_origins=cors_allow_origins,
         max_players=max_players,
         full_snapshot_max_players=full_snapshot_max_players,
+        famous_pool_size=max(100, famous_pool_size),
+        min_birth_year=max(1800, min_birth_year),
         wikidata_endpoint=os.getenv("WIKIDATA_ENDPOINT", "https://query.wikidata.org/sparql"),
         wikidata_user_agent=os.getenv(
             "WIKIDATA_USER_AGENT",

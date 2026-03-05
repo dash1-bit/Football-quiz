@@ -21,7 +21,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.append(str(BACKEND_DIR))
 
 from app.config import load_settings  # noqa: E402
-from app.database import connect, init_db  # noqa: E402
+from app.database import connect, create_or_replace_famous_view, init_db  # noqa: E402
 
 
 PLAYER_URI_PREFIX = "http://www.wikidata.org/entity/"
@@ -295,9 +295,16 @@ def hydrate_players(
     qids: list[str],
     batch_size: int,
     replace_snapshot: bool,
+    famous_pool_size: int,
+    min_birth_year: int,
 ) -> dict[str, Any]:
     with connect(db_path) as conn:
         init_db(conn)
+        create_or_replace_famous_view(
+            conn,
+            famous_pool_size=famous_pool_size,
+            min_birth_year=min_birth_year,
+        )
         if replace_snapshot:
             clear_snapshot_tables(conn)
 
@@ -329,6 +336,11 @@ def hydrate_players(
             )
 
         compute_stats_cache(conn)
+        create_or_replace_famous_view(
+            conn,
+            famous_pool_size=famous_pool_size,
+            min_birth_year=min_birth_year,
+        )
         snapshot_time = datetime.now(UTC).isoformat()
         set_snapshot_meta(conn, "snapshot_generated_at", snapshot_time)
         set_snapshot_meta(conn, "discovered_qids_count", str(len(qids)))
@@ -986,6 +998,8 @@ def main() -> None:
             qids=qids,
             batch_size=args.batch_size,
             replace_snapshot=not args.no_replace,
+            famous_pool_size=settings.famous_pool_size,
+            min_birth_year=settings.min_birth_year,
         )
         write_snapshot_meta_json(snapshot_meta_path, metadata)
         logging.info("Snapshot metadata written to %s", snapshot_meta_path)

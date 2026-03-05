@@ -8,12 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .config import load_settings
-from .database import connect, init_db
+from .database import connect, create_or_replace_famous_view, init_db
 from .game_engine import GameError, GameManager
 
 
 settings = load_settings()
-game_manager = GameManager(db_path=settings.db_path, scoring_curve=settings.scoring_curve)
+game_manager = GameManager(
+    db_path=settings.db_path,
+    scoring_curve=settings.scoring_curve,
+    famous_pool_size=settings.famous_pool_size,
+    min_birth_year=settings.min_birth_year,
+)
 logger = logging.getLogger("football_quiz.api")
 
 app = FastAPI(title="Football Quiz API", version="2.0.0")
@@ -94,6 +99,12 @@ def health() -> dict[str, str | int | None]:
     except sqlite3.OperationalError:
         with connect(settings.db_path) as conn:
             init_db(conn)
+            create_or_replace_famous_view(
+                conn,
+                famous_pool_size=settings.famous_pool_size,
+                min_birth_year=settings.min_birth_year,
+            )
+            conn.commit()
             row = conn.execute(
                 "SELECT value FROM snapshot_meta WHERE key = 'snapshot_generated_at'",
             ).fetchone()
@@ -231,6 +242,12 @@ def _ensure_schema_or_read_only() -> None:
     try:
         with connect(settings.db_path) as conn:
             init_db(conn)
+            create_or_replace_famous_view(
+                conn,
+                famous_pool_size=settings.famous_pool_size,
+                min_birth_year=settings.min_birth_year,
+            )
+            conn.commit()
     except sqlite3.OperationalError:
         with connect(settings.db_path, read_only=True) as conn:
             conn.execute("SELECT 1").fetchone()

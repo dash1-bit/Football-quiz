@@ -68,6 +68,33 @@ async function run() {
     );
     assert(/\d+s/.test(timerText), `Timer not visible: ${timerText}`);
 
+    const clueHistoryCountBefore = await page.$$eval(
+      '[data-testid="clue-history-list"] li',
+      (items) => items.length,
+    );
+    assert(clueHistoryCountBefore >= 1, "Expected at least one revealed clue.");
+
+    await page.fill('[data-testid="guess-input"]', "zzzzzzzzzz");
+    await page.click('[data-testid="guess-btn"]');
+
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-testid="clue-index-text"]');
+        return Boolean(el && Number.parseInt((el.textContent || "0").trim(), 10) >= 2);
+      },
+      undefined,
+      { timeout: 20000 },
+    );
+
+    const clueHistoryCountAfter = await page.$$eval(
+      '[data-testid="clue-history-list"] li',
+      (items) => items.length,
+    );
+    assert(
+      clueHistoryCountAfter >= 2,
+      `Expected clue history to show two clues, got ${clueHistoryCountAfter}`,
+    );
+
     console.log(
       JSON.stringify(
         {
@@ -77,6 +104,7 @@ async function run() {
           lobby_code: lobbyCode,
           player_count_text: playerCount,
           timer_text: timerText,
+          clue_history_count: clueHistoryCountAfter,
         },
         null,
         2,

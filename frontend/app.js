@@ -25,6 +25,7 @@ const dom = {
   startGameBtn: document.getElementById("startGameBtn"),
   clueIndexText: document.getElementById("clueIndexText"),
   timerText: document.getElementById("timerText"),
+  clueHistoryList: document.getElementById("clueHistoryList"),
   clueText: document.getElementById("clueText"),
   guessInput: document.getElementById("guessInput"),
   guessBtn: document.getElementById("guessBtn"),
@@ -44,8 +45,11 @@ const state = {
   started: false,
   gameOver: false,
   clueIndex: 0,
+  roundEndTs: null,
   pollHandle: null,
+  timerHandle: null,
   autocompleteHandle: null,
+  warmupShown: false,
   latestLobby: null,
   latestGame: null,
 };
@@ -84,21 +88,42 @@ async function apiRequest(path, method = "GET", body = null) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
-  const text = await response.text();
-  let payload = {};
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = { raw: text };
+
+  let warmupTimer = null;
+  let warmupDisplayed = false;
+  if (!state.warmupShown) {
+    warmupTimer = setTimeout(() => {
+      state.warmupShown = true;
+      warmupDisplayed = true;
+      setMessage("Warming up...", false);
+    }, 2000);
+  }
+
+  try {
+    const response = await fetch(url, options);
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { raw: text };
+      }
+    }
+
+    if (!response.ok) {
+      const detail = payload.detail || response.statusText || "Request failed";
+      throw new Error(detail);
+    }
+    return payload;
+  } finally {
+    if (warmupTimer) {
+      clearTimeout(warmupTimer);
+    }
+    if (warmupDisplayed) {
+      setMessage("", false);
     }
   }
-  if (!response.ok) {
-    const detail = payload.detail || response.statusText || "Request failed";
-    throw new Error(detail);
-  }
-  return payload;
 }
 
 function renderPlayerList(listElement, rows) {
@@ -112,6 +137,48 @@ function renderPlayerList(listElement, rows) {
     li.append(left, right);
     listElement.appendChild(li);
   }
+}
+
+function renderClueHistory(clues) {
+  dom.clueHistoryList.innerHTML = "";
+  if (!Array.isArray(clues) || clues.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "Waiting for clue...";
+    dom.clueHistoryList.appendChild(li);
+    return;
+  }
+  clues.forEach((text, index) => {
+    const li = document.createElement("li");
+    li.textContent = `${index + 1}. ${text}`;
+    dom.clueHistoryList.appendChild(li);
+  });
+}
+
+function stopLocalTimer() {
+  if (state.timerHandle) {
+    clearInterval(state.timerHandle);
+    state.timerHandle = null;
+  }
+}
+
+function updateTimerText() {
+  if (!state.roundEndTs) {
+    return;
+  }
+  const secondsLeft = Math.max(0, Math.ceil(state.roundEndTs - Date.now() / 1000));
+  dom.timerText.textContent = `${secondsLeft}s`;
+}
+
+function startLocalTimer(roundEndTs) {
+  stopLocalTimer();
+  if (!roundEndTs) {
+    dom.timerText.textContent = "0s";
+    state.roundEndTs = null;
+    return;
+  }
+  state.roundEndTs = roundEndTs;
+  updateTimerText();
+  state.timerHandle = setInterval(updateTimerText, 250);
 }
 
 function renderLobby(lobby) {
@@ -134,22 +201,36 @@ function renderGame(game) {
   state.gameOver = Boolean(game.game_over);
 
   if (state.gameOver) {
+    stopLocalTimer();
     renderEnd(game);
     return;
   }
 
   showScreen("game");
-  dom.clueIndexText.textContent = String(game.clue_index || 1);
-  dom.timerText.textContent = `${game.round_seconds_left || 0}s`;
-  dom.clueText.textContent = game.current_clue_text || "Waiting for clue...";
+  const clueIndex = game.current_clue_index || game.clue_index || 1;
+  dom.clueIndexText.textContent = String(clueIndex);
+  const cluesRevealed = Array.isArray(game.clues_revealed) ? game.clues_revealed : [];
+  renderClueHistory(cluesRevealed);
+  dom.clueText.textContent =
+    game.current_clue_text || cluesRevealed[cluesRevealed.length - 1] || "Waiting for clue...";
+
+  if (game.round_end_ts) {
+    startLocalTimer(game.round_end_ts);
+  } else if (typeof game.round_seconds_left === "number") {
+    stopLocalTimer();
+    dom.timerText.textContent = `${Math.max(0, game.round_seconds_left)}s`;
+  } else {
+    stopLocalTimer();
+    dom.timerText.textContent = "0s";
+  }
 
   const scoreboardRows = (game.scoreboard || []).map((row) => ({
     name: row.name,
-    rightText: `${row.score} pts${row.has_solved ? " • solved" : ""}`,
+    rightText: `${row.score} pts${row.has_solved ? " solved" : ""}`,
   }));
   renderPlayerList(dom.scoreboardList, scoreboardRows);
 
-  const clueChanged = state.clueIndex !== game.clue_index;
+  const clueChanged = state.clueIndex !== clueIndex;
   const canGuess = Boolean(game.can_guess);
   dom.guessInput.disabled = !canGuess;
   dom.guessBtn.disabled = !canGuess;
@@ -158,7 +239,7 @@ function renderGame(game) {
     dom.guessInput.value = "";
     hideAutocomplete();
   }
-  state.clueIndex = game.clue_index;
+  state.clueIndex = clueIndex;
 
   if (game.you_has_solved) {
     dom.guessStatusText.textContent = "Correct! You're locked for the rest of this game.";
@@ -218,9 +299,13 @@ async function refreshState() {
 
 function startPolling() {
   stopPolling();
-  state.pollHandle = setInterval(() => {
-    runAction(refreshState);
-  }, 1000);
+  state.pollHandle = setInterval(async () => {
+    try {
+      await refreshState();
+    } catch (error) {
+      setMessage(`Error: ${error.message}`);
+    }
+  }, 2500);
 }
 
 function stopPolling() {
@@ -228,6 +313,7 @@ function stopPolling() {
     clearInterval(state.pollHandle);
     state.pollHandle = null;
   }
+  stopLocalTimer();
 }
 
 function hideAutocomplete() {
@@ -419,10 +505,14 @@ function resetSession() {
   state.started = false;
   state.gameOver = false;
   state.clueIndex = 0;
+  state.roundEndTs = null;
   state.latestLobby = null;
   state.latestGame = null;
   dom.guessInput.value = "";
   dom.guessStatusText.textContent = "";
+  dom.clueText.textContent = "Waiting for clue...";
+  dom.clueHistoryList.innerHTML = "";
+  dom.timerText.textContent = "60s";
   dom.answerText.textContent = "-";
   dom.scoreboardList.innerHTML = "";
   dom.finalScoreList.innerHTML = "";
@@ -487,3 +577,4 @@ function init() {
 }
 
 init();
+

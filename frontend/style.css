@@ -149,6 +149,17 @@ button:disabled {
   line-height: 1.45;
 }
 
+.clue-history {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 8px;
+}
+
+.clue-history li {
+  line-height: 1.4;
+}
+
 .guess-area {
   display: grid;
   gap: 8px;
